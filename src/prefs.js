@@ -1,10 +1,12 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { getDoc, setDoc } from "./store.js";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const DIR = join(ROOT, "data");
-const PATH = join(DIR, "preferences.json");
+/**
+ * Boss preferences (timezone, travel defaults, standing rules).
+ *
+ * Backed by the shared store so preferences survive a serverless cold start and
+ * are consistent across concurrent instances. Records are mirrored into memory
+ * by `ensureHydrated()` before any route runs, so these reads stay synchronous.
+ */
 
 const DEFAULT = {
   bossZone: "America/New_York",
@@ -16,31 +18,12 @@ const DEFAULT = {
   standingRules: ["block 1h buffer after international arrivals"],
 };
 
-let cache = null;
-
-function load() {
-  if (cache) return cache;
-  try {
-    cache = existsSync(PATH) ? JSON.parse(readFileSync(PATH, "utf8")) : { ...DEFAULT };
-  } catch {
-    cache = { ...DEFAULT };
-  }
-  return cache;
-}
-
 export function getPrefs() {
-  return { ...load() };
+  return { ...DEFAULT, ...(getDoc("prefs") ?? {}) };
 }
 
 export function setPrefs(patch) {
-  const cur = load();
-  const next = { ...cur, ...patch };
-  cache = next;
-  try {
-    mkdirSync(DIR, { recursive: true });
-    writeFileSync(PATH, JSON.stringify(next, null, 2), "utf8");
-  } catch (err) {
-    console.warn("[prefs] could not persist (read-only storage):", err.message);
-  }
+  const next = { ...getPrefs(), ...patch };
+  setDoc("prefs", next);
   return { ...next };
 }

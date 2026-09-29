@@ -8,7 +8,7 @@
     "dev": "node src/server.js",
     "cli": "node src/cli.js",
     "demo": "node src/cli.js",
-    "build:api": "esbuild src/vercel-entry.js --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/[...path].js",
+    "build:api": "esbuild src/vercel-entry.js --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=build/server.js",
     "build:api:watch": "npm run build:api -- --watch",
     "verify:whatsapp": "node scripts/verify-whatsapp.js"
   },

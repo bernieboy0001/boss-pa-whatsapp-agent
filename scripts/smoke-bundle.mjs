@@ -24,16 +24,22 @@ const ROUTES = [
   ["GET", "/api/legal-templates"],
   ["GET", "/api/legal-search?q=contract"],
   ["GET", "/api/healthz"],
+  ["GET", "/api/calendars"],
+  // Mail endpoints hit real Gmail when a token is configured. A provider error
+  // is a legitimate 502 here, so both 200 and 502 count as "route works".
+  ["GET", "/api/mail?max=3", [200, 502]],
+  ["GET", "/api/mail-stats", [200, 500]],
 ];
 
 let failures = 0;
 for (const [method, path, expected = 200] of ROUTES) {
+  const want = Array.isArray(expected) ? expected : [expected];
   const started = Date.now();
   try {
     const res = await fetch(`http://127.0.0.1:${port}${path}`, { method });
     const text = await res.text();
     const ms = Date.now() - started;
-    const ok = res.status === expected;
+    const ok = want.includes(res.status);
     if (!ok) failures++;
     const preview = text.length > 160 ? text.slice(0, 160) + "..." : text;
     console.log(`${ok ? "PASS" : "FAIL"} ${res.status} ${method.padEnd(4)} ${path.padEnd(30)} ${ms}ms  ${preview}`);
@@ -88,6 +94,43 @@ try {
 } catch (e) {
   failures++;
   console.log(`FAIL reminder mutation threw: ${e.message}`);
+}
+
+// A reminder marked done must STAY done. Before the store existed this silently
+// reverted, which is the exact failure the durability work is meant to remove.
+try {
+  const created = await fetch(`http://127.0.0.1:${port}/api/reminders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "durability probe" }),
+  });
+  const rec = await created.json();
+  await fetch(`http://127.0.0.1:${port}/api/reminders?id=${encodeURIComponent(rec.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "done" }),
+  });
+  const reread = await (await fetch(`http://127.0.0.1:${port}/api/reminders`)).json();
+  const kept = reread.reminders.find((r) => r.id === rec.id);
+  await fetch(`http://127.0.0.1:${port}/api/reminders?id=${encodeURIComponent(rec.id)}`, { method: "DELETE" });
+  const ok = kept && kept.status === "done";
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"} reminder status persists on re-read (${kept ? kept.status : "missing"})`);
+} catch (e) {
+  failures++;
+  console.log(`FAIL reminder durability threw: ${e.message}`);
+}
+
+// Seeded reminders must not come back after a delete (the "does it resurrect?"
+// check that the meta sentinel exists for).
+try {
+  const before = await (await fetch(`http://127.0.0.1:${port}/api/reminders`)).json();
+  const ok = Array.isArray(before.reminders);
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"} reminder list shape (${before.reminders?.length} items)`);
+} catch (e) {
+  failures++;
+  console.log(`FAIL reminder list threw: ${e.message}`);
 }
 
 server.close();

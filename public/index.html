@@ -48,6 +48,10 @@
           <span class="nav-label">Inbox</span>
           <b class="nav-badge" id="inboxCountBadge">4</b>
         </a>
+        <a class="nav-item" href="#mail" id="navMail">
+          <span class="nav-icon">✉</span>
+          <span class="nav-label">Mail</span>
+        </a>
         <a class="nav-item" href="#travel" id="navTravel">
           <span class="nav-icon">↗</span>
           <span class="nav-label">Travel</span>
@@ -221,6 +225,24 @@
 
       <!-- Bottom Grid: Reminders & Preferences -->
       <section class="bottom-grid">
+        <!-- Mail Reader -->
+        <article class="surface mini-surface" id="mail">
+          <div class="surface-head">
+            <div>
+              <p class="card-kicker">MAIL READER</p>
+              <h2>Your mail</h2>
+            </div>
+            <button class="text-btn" id="refreshMail" type="button" title="Reload mail">Refresh <span class="refresh-icon">↻</span></button>
+          </div>
+          <form class="mail-search" id="mailSearchForm">
+            <input id="mailQuery" placeholder="Gmail search — e.g. is:unread from:boss subject:invoice" autocomplete="off" aria-label="Mail search query">
+            <button class="add-btn" type="submit">Read</button>
+          </form>
+          <div class="mail-meta" id="mailMeta">Loading mailbox…</div>
+          <ul class="mail-list" id="mailList"></ul>
+          <button class="text-btn mail-ask" id="mailAskBtn" type="button">Ask the assistant to read and summarise these</button>
+        </article>
+
         <!-- Reminders Card -->
         <article class="surface mini-surface" id="remindersPanel">
           <div class="surface-head">

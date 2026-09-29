@@ -2,20 +2,23 @@ import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getOAuth2Client } from "./oauth2-client.js";
+import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName } from "./zoned-time.js";
 
 let calendarClient = null;
 
 function getCalendarClient() {
   if (calendarClient) return calendarClient;
-
   const auth = getOAuth2Client();
   calendarClient = google.calendar({ version: "v3", auth });
   return calendarClient;
 }
 
+function bossZone() {
+  return cfg.bossTimezone ?? "America/New_York";
+}
+
 function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return zonedToday(bossZone());
 }
 
 function toISO(dateStr, timeStr) {
@@ -24,71 +27,157 @@ function toISO(dateStr, timeStr) {
   return `${dateStr}T${timeStr}:00`;
 }
 
-function fromISO(iso) {
-  if (!iso) return { date: "", time: "" };
-  const d = new Date(iso);
-  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return { date, time };
+/**
+ * Every calendar the token can read.
+ *
+ * The agenda used to hardcode calendarId:"primary", which silently hid the
+ * shared family calendar even though the token can see it. Cached briefly
+ * because this is a round trip on every agenda render.
+ */
+let calendarCache = { at: 0, list: [] };
+const CALENDAR_TTL_MS = 5 * 60 * 1000;
+
+async function readableCalendars() {
+  if (Date.now() - calendarCache.at < CALENDAR_TTL_MS && calendarCache.list.length) {
+    return calendarCache.list;
+  }
+  const cal = getCalendarClient();
+  const res = await cal.calendarList.list({ minAccessRole: "reader" });
+  const list = (res.data.items ?? []).map((c) => ({
+    id: c.id,
+    summary: c.summary ?? c.id,
+    primary: Boolean(c.primary),
+    accessRole: c.accessRole ?? "reader",
+    // Reference calendars (holidays, birthdays) are labelled rather than
+    // hidden: the boss asked to see everything the token can read.
+    reference: /holiday|birthday|week.?number/i.test(c.summary ?? c.id),
+  }));
+  list.sort((a, b) => Number(b.primary) - Number(a.primary) || a.summary.localeCompare(b.summary));
+  calendarCache = { at: Date.now(), list };
+  return list;
 }
 
-function getTZOffset(tz) {
-  const d = new Date();
-  const offset = -d.getTimezoneOffset();
-  const sign = offset >= 0 ? "+" : "-";
-  const h = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
-  const m = String(Math.abs(offset) % 60).padStart(2, "0");
-  return `${sign}${h}:${m}`;
+export async function listCalendars() {
+  return readableCalendars();
+}
+
+/** The calendar new events are written to. */
+function writeCalendarId() {
+  return cfg.calendarWriteId || "primary";
+}
+
+/** One calendar's events across a window, following pagination. */
+async function listWindow(cal, calendarId, timeMin, timeMax) {
+  const out = [];
+  let pageToken;
+  do {
+    const res = await cal.events.list({
+      calendarId,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 250,
+      pageToken,
+    });
+    out.push(...(res.data.items ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return out;
 }
 
 export async function getTodaySummary(req) {
+  const tz = bossZone();
   const date = req?.date ?? todayISO();
   const cal = getCalendarClient();
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const { start, end } = zonedDayBounds(date, tz);
 
-  // RFC3339 format with timezone offset
-  const start = new Date(`${date}T00:00:00${getTZOffset(tz)}`).toISOString();
-  const end = new Date(`${date}T23:59:59${getTZOffset(tz)}`).toISOString();
+  const calendars = await readableCalendars();
+  const warnings = [];
+  const perCalendar = await Promise.all(
+    calendars.map(async (c) => {
+      try {
+        const found = await listWindow(cal, c.id, start, end);
+        return found.map((e) => ({ e, c }));
+      } catch (err) {
+        // Losing access to one shared calendar must not blank the whole agenda.
+        console.warn(`[calendar] skipping ${c.summary} (${c.id}): ${err.message}`);
+        warnings.push(`${c.summary}: ${err.message}`);
+        return [];
+      }
+    }),
+  );
 
-  const res = await cal.events.list({
-    calendarId: "primary",
-    timeMin: start,
-    timeMax: end,
-    singleEvents: true,
-    orderBy: "startTime",
-  });
+  const items = [];
+  for (const { e, c } of perCalendar.flat()) {
+    const dateTime = e.start?.dateTime;
+    const allDayDate = e.start?.date;
+    const raw = dateTime ?? allDayDate;
+    if (!raw) continue;
 
-  const items = (res.data.items ?? []).map((e) => {
-    const startTime = e.start?.dateTime ?? e.start?.date ?? "";
-    const { time } = fromISO(startTime);
-    return {
-      time: time || "All day",
-      title: e.summary ?? "(no title)",
-      attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
-      done: false,
-    };
-  });
+    if (dateTime) {
+      const eventTz = e.start?.timeZone || tz;
+      const instant = new Date(dateTime);
+      // A timed event can fall on a different local date than the day queried
+      // (an evening event already tomorrow in the boss's zone).
+      if (zonedDateStr(instant, eventTz) !== date) continue;
+      items.push({
+        time: zonedTimeStr(instant, eventTz),
+        sortKey: zonedTimeStr(instant, eventTz),
+        title: e.summary ?? "(no title)",
+        location: e.location ?? "",
+        attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
+        done: false,
+        calendar: c.summary,
+        calendarId: c.id,
+        gcalId: e.id,
+      });
+    } else {
+      // Recurring all-day events expand to one instance per day.
+      if (!String(allDayDate).startsWith(date)) continue;
+      items.push({
+        time: "All day",
+        sortKey: "00:00",
+        title: e.summary ?? "(no title)",
+        location: e.location ?? "",
+        attendees: [],
+        done: false,
+        calendar: c.summary,
+        calendarId: c.id,
+        gcalId: e.id,
+      });
+    }
+  }
 
   const stored = eventsOn(date).map((e) => ({
     time: String(e.when ?? "").slice(11, 16),
+    sortKey: String(e.when ?? "").slice(11, 16),
     title: e.summary,
+    location: "",
     attendees: e.attendees ?? [],
     done: Boolean(e.done),
+    calendar: "Booked via assistant",
+    calendarId: "local",
   }));
 
   const all = [...items, ...stored]
     .filter((i) => i.time)
-    .sort((a, b) => a.time.localeCompare(b.time));
+    .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 
-  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const name = dayNames[new Date(`${date}T12:00:00`).getDay()];
-
+  const name = zonedWeekdayName(date, tz);
   return {
     id: "day",
     date,
     day: name,
     title: `${name} — ${date}`,
-    items: all,
+    items: all.map(({ sortKey, ...rest }) => rest),
+    calendars: calendars.map((c) => ({
+      id: c.id,
+      summary: c.summary,
+      primary: c.primary,
+      reference: c.reference,
+    })),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
@@ -106,7 +195,8 @@ export async function freeBusy(req) {
 export async function bookOrMove(req) {
   const { action, summary, when } = req ?? {};
   const cal = getCalendarClient();
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const tz = bossZone();
+  const calId = writeCalendarId();
 
   if (action === "cancel") {
     const target = summary
@@ -115,7 +205,7 @@ export async function bookOrMove(req) {
     if (!target) return { ok: false, error: `No event matching "${summary}" found to cancel.` };
 
     if (target.gcalId) {
-      await cal.events.delete({ calendarId: "primary", eventId: target.gcalId });
+      await cal.events.delete({ calendarId: target.calendarId || calId, eventId: target.gcalId });
     }
     removeEvent(target.id);
     return { ok: true, action, id: target.id, summary: target.summary, when: target.when, note: "cancelled from calendar" };
@@ -133,7 +223,7 @@ export async function bookOrMove(req) {
 
     if (target.gcalId) {
       await cal.events.patch({
-        calendarId: "primary",
+        calendarId: target.calendarId || calId,
         eventId: target.gcalId,
         requestBody: {
           start: { dateTime: start, timeZone: tz },
@@ -157,12 +247,18 @@ export async function bookOrMove(req) {
   };
 
   const created = await cal.events.insert({
-    calendarId: "primary",
+    calendarId: calId,
     requestBody: event,
     sendUpdates: "all",
   });
 
-  const record = addEvent({ summary, when: start, gcalId: created.data.id, attendees: [] });
+  const record = addEvent({
+    summary,
+    when: start,
+    gcalId: created.data.id,
+    calendarId: calId,
+    attendees: [],
+  });
   return {
     ok: true,
     action: "book",

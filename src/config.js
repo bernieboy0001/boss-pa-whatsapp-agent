@@ -60,6 +60,9 @@ export const cfg = {
   saKeyPath: process.env.GOOGLE_SA_KEY_PATH ?? "",
   bossCalendarEmail: process.env.BOSS_CALENDAR_EMAIL ?? "",
   bossTimezone: process.env.BOSS_TIMEZONE ?? "America/New_York",
+  // Where new events are written. Reads span every calendar the token can see;
+  // writes always target this one. Defaults to the token owner's primary.
+  calendarWriteId: process.env.CALENDAR_WRITE_ID ?? "",
 
   // --- Tools: Google OAuth2 (personal Gmail) ---
   googleOauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? "",

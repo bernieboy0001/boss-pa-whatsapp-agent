@@ -7,12 +7,14 @@ import { cfg, brainConfigured } from "./config.js";
 import { handleMessage } from "./agent.js";
 import { normalizeInbound, sendText, verifyWebhook } from "./photon.js";
 import { viewItinerary } from "./tools/itinerary.js";
-import { getTodaySummary, freeBusy } from "./tools/calendar.js";
+import { getTodaySummary, freeBusy, listCalendars } from "./tools/calendar.js";
 import { getEvents } from "./tools/events.js";
-import { inboxSummary } from "./tools/email.js";
+import { inboxSummary, readMail, mailboxStatsSafe } from "./tools/email.js";
 import { getPrefs, setPrefs } from "./prefs.js";
 import { getReminders, getTrends, suggestTime, addReminder, updateReminder, deleteReminder } from "./tools/reminders.js";
 import { searchLaw, findTemplates } from "./tools/legal.js";
+import { ensureHydrated, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
+import { zonedDateStr, zonedToday, addDays } from "./tools/zoned-time.js";
 
 /**
  * Phase 2: the always-on webhook the WhatsApp channel (Photon/Spectrum) calls.
@@ -26,13 +28,25 @@ export const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(PUBLIC_DIR));
 
-// Per-sender conversation state (pending confirmations, etc.). In-memory is fine
-// for the hackathon; swap for Redis/Firestore when we need survivable restarts.
-const sessions = new Map();
+// Everything downstream reads state through synchronous getters, so the store
+// must be warm before the first route body runs. Hydration is idempotent and
+// resolves once per cold start.
+app.use((_req, _res, next) => {
+  ensureHydrated().then(next, (err) => {
+    console.error("[store] hydration rejected:", err.message);
+    next();
+  });
+});
+
+// Per-sender conversation state (pending confirmations, turn history), now
+// durable so "confirm"/"book f1" survives a cold start and works no matter
+// which instance serves the next request.
 function sessionFor(from) {
   const key = from || "unknown";
-  if (!sessions.has(key)) sessions.set(key, {});
-  return sessions.get(key);
+  return getSession(key) ?? {};
+}
+function saveSession(from, session) {
+  putSession(from || "unknown", session);
 }
 
 // Reports what is genuinely live vs. simulated, so the dashboard can label
@@ -45,6 +59,11 @@ function healthStatus() {
     flightsSimulated: cfg.flightProvider === "stub",
     brain: brainConfigured(),
     brainModel: brainConfigured() ? cfg.llmModel : null,
+    // "kv" is durable; "memory" means state is lost on cold start and is not
+    // shared across instances. Surfaced so the dashboard never implies
+    // durability it does not have.
+    store: storeKind,
+    storeDurable: storeKind === "kv",
   };
 }
 app.get("/healthz", (_req, res) => res.json(healthStatus()));
@@ -52,6 +71,15 @@ app.get("/healthz", (_req, res) => res.json(healthStatus()));
 app.get("/api/healthz", (_req, res) => res.json(healthStatus()));
 
 // --- Dashboard API ---
+
+app.get("/api/calendars", async (_req, res) => {
+  try {
+    res.json({ calendars: await listCalendars() });
+  } catch (e) {
+    console.error("[api/calendars] error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get("/api/itinerary", (_req, res) => res.json({ text: viewItinerary() }));
 
@@ -71,14 +99,16 @@ app.get("/api/day", async (req, res) => {
 
 app.get("/api/week", async (req, res) => {
   try {
-    const start = req.query.start ? new Date(req.query.start) : new Date();
+    // Walk calendar days in the boss's zone, not the server's. `new Date()` +
+    // setDate() steps in server-local time, so on a UTC instance the week
+    // either started a day early/late or rolled over at 20:00 ET.
+    const tz = cfg.bossTimezone ?? "America/New_York";
+    const first = req.query.start ? zonedDateStr(new Date(req.query.start), tz) : zonedToday(tz);
     const days = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(start);
-      d.setDate(d.getDate() + i);
-      const date = d.toISOString().slice(0, 10);
+      const date = addDays(first, i);
       const summary = await getTodaySummary({ date });
-      days.push({ date, summary: summary?.items ?? [] });
+      days.push({ date, day: summary?.day, summary: summary?.items ?? [] });
     }
     res.json({ days });
   } catch (e) {
@@ -96,15 +126,48 @@ app.get("/api/inbox", async (_req, res) => {
   }
 });
 
+// Real message read. `query` takes Gmail search syntax, so the dashboard can
+// page the mailbox without a bespoke API per filter.
+app.get("/api/mail", async (req, res) => {
+  try {
+    const max = req.query.max ? Number(req.query.max) : 25;
+    const result = await readMail({
+      query: req.query.q || undefined,
+      max: Number.isFinite(max) ? max : 25,
+      fullBody: req.query.body !== "0",
+    });
+    res.json(result);
+  } catch (e) {
+    console.error("[api/mail] error:", e);
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/mail-stats", async (_req, res) => {
+  try {
+    res.json(await mailboxStatsSafe());
+  } catch (e) {
+    console.error("[api/mail-stats] error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/prefs", (_req, res) => res.json(getPrefs()));
-app.patch("/api/prefs", (req, res) => res.json(setPrefs(req.body)));
+// A serverless instance can be frozen the instant the response is sent, so the
+// write has to be awaited before responding — not fire-and-forget.
+app.patch("/api/prefs", async (req, res) => {
+  const next = setPrefs(req.body);
+  await flush();
+  res.json(next);
+});
 
 app.get("/api/reminders", (_req, res) => res.json({ reminders: getReminders(), trends: getTrends() }));
-app.post("/api/reminders", (req, res) => {
+app.post("/api/reminders", async (req, res) => {
   const { text, due, recurring } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
   const suggested = due || suggestTime(text);
   const rem = addReminder({ text, due: suggested, recurring: recurring ?? null });
+  await flush();
   res.json(rem);
 });
 // Mutations are addressed as /api/reminders?id=… on purpose. In the Vercel
@@ -113,19 +176,21 @@ app.post("/api/reminders", (req, res) => {
 // at the edge. Both shapes are registered so local dev and nested callers work.
 const reminderId = (req) => req.params.id || req.query.id || null;
 
-function patchReminder(req, res) {
+async function patchReminder(req, res) {
   const id = reminderId(req);
   if (!id) return res.status(400).json({ error: "id required" });
   const updated = updateReminder(id, req.body);
   if (!updated) return res.status(404).json({ error: "not found" });
+  await flush();
   res.json(updated);
 }
 
-function removeReminder(req, res) {
+async function removeReminder(req, res) {
   const id = reminderId(req);
   if (!id) return res.status(400).json({ error: "id required" });
   const ok = deleteReminder(id);
   if (!ok) return res.status(404).json({ error: "not found" });
+  await flush();
   res.json({ ok: true });
 }
 
@@ -172,7 +237,12 @@ app.post("/api/chat", async (req, res) => {
   // that is indistinguishable from the assistant misunderstanding the user.
   const degraded = {};
   try {
-    const reply = await handleMessage(text, { session: sessionFor("dashboard"), degraded });
+    const session = sessionFor("dashboard");
+    const reply = await handleMessage(text, { session, degraded });
+    // Persist the mutated session (pending confirmations, turn history) before
+    // responding, so the follow-up "confirm" can land on any instance.
+    saveSession("dashboard", session);
+    await flush();
     res.json({ text: reply, degraded: Object.keys(degraded).length ? degraded : null });
   } catch (err) {
     console.error("[chat] agent error:", err.message);
@@ -192,7 +262,10 @@ async function photonWebhook(req, res) {
   res.status(200).json({ ok: true });
 
   try {
-    const reply = await handleMessage(text, { session: sessionFor(from) });
+    const session = sessionFor(from);
+    const reply = await handleMessage(text, { session });
+    saveSession(from, session);
+    await flush();
     await sendText(from, reply);
   } catch (err) {
     console.error("[webhook] agent error:", err.message);

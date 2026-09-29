@@ -1,17 +1,22 @@
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getTodaySummary as gcalToday, freeBusy as gcalFreeBusy, bookOrMove as gcalBookOrMove } from "./google-calendar.js";
-import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove } from "./google-calendar-oauth.js";
-
-const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars } from "./google-calendar-oauth.js";
+import { zonedToday, zonedWeekdayName } from "./zoned-time.js";
 
 function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return zonedToday(cfg.bossTimezone ?? "America/New_York");
 }
 
 function buildDayItems(date) {
-  const hour = new Date().getHours();
+  // "Done" should follow the boss's clock, not the server's (UTC on Vercel).
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: cfg.bossTimezone ?? "America/New_York",
+      hour: "numeric",
+      hour12: false,
+    }).format(new Date()),
+  );
   const defaults = [
     { time: "09:00", title: "Standup — Q3 ops", attendees: ["boss", "head-of-ops"], done: hour >= 9 },
     { time: "10:30", title: "Vendor review — Acme Cloud", attendees: ["boss", "cf", "procurement"], done: hour >= 10 },
@@ -36,9 +41,10 @@ const OPEN_HOURS = [
 ];
 
 function stubToday(req) {
+  const tz = cfg.bossTimezone ?? "America/New_York";
   const date = req?.date ?? todayISO();
-  const name = dayNames[new Date(`${date}T12:00:00`).getDay()];
-  return { id: "day", date, day: name, title: `${name} — ${date}`, items: buildDayItems(date) };
+  const name = zonedWeekdayName(date, tz);
+  return { id: "day", date, day: name, title: `${name} — ${date}`, items: buildDayItems(date), stub: true };
 }
 
 function stubFreeBusy(req) {
@@ -70,6 +76,13 @@ function stubBookOrMove(req) {
 
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
 const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && cfg.googleOauthRefreshToken && cfg.bossCalendarEmail);
+
+export async function listCalendars() {
+  if (useOAuth2()) {
+    try { return await oauthListCalendars(); } catch (e) { console.warn("[calendar] OAuth2 list failed:", e.message); }
+  }
+  return [];
+}
 
 export async function getTodaySummary(req) {
   if (useServiceAccount()) {

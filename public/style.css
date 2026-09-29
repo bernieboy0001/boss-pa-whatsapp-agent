@@ -452,6 +452,52 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .inbox-from { font-size: 10.5px; color: var(--dim); }
 .inbox-subject { font-size: 11.5px; color: var(--text); overflow-wrap: anywhere; }
 
+/* --- Mail reader ------------------------------------------------------- */
+.mail-search { display: flex; gap: 6px; margin-bottom: 8px; }
+.mail-search input {
+  flex: 1; min-width: 0;
+  padding: 7px 9px;
+  font: inherit; font-size: 11.5px;
+  color: var(--text);
+  background: var(--surface-2, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.mail-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mail-meta { font-size: 10.5px; color: var(--dim); margin-bottom: 6px; }
+.mail-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column;
+  max-height: 340px; overflow-y: auto;
+}
+.mail-item { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.mail-item:last-child { border-bottom: 0; }
+.mail-item.unread .mail-subject { font-weight: 650; }
+.mail-item-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mail-from {
+  font-size: 10.5px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mail-when { font-size: 10px; color: var(--dim); flex-shrink: 0; }
+.mail-subject { font-size: 11.5px; color: var(--text); overflow-wrap: anywhere; margin-top: 1px; }
+.mail-snippet {
+  font-size: 10.5px; color: var(--dim); margin-top: 2px;
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mail-clip { font-size: 10px; color: var(--dim); }
+.mail-body {
+  font-size: 10.5px; line-height: 1.5; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--surface-2, var(--bg));
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px; margin: 6px 0 0;
+  max-height: 220px; overflow-y: auto;
+}
+.mail-expand { font-size: 10px; padding: 2px 0; }
+.mail-empty { font-size: 11px; color: var(--dim); padding: 10px 0; }
+.mail-ask { margin-top: 8px; font-size: 11px; }
+
 .ai-card-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .chat-action {
   font-size: 10.5px;

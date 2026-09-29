@@ -102,6 +102,91 @@ async function api(path, options = {}) {
 }
 
 // ============================================================
+// Mail Reader
+// ============================================================
+function relativeTime(isoish) {
+  if (!isoish) return "";
+  const t = Date.parse(isoish);
+  if (Number.isNaN(t)) return "";
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+function renderMail(box) {
+  const list = $("#mailList");
+  const meta = $("#mailMeta");
+  if (!list || !meta) return;
+
+  list.innerHTML = "";
+
+  if (box.error) {
+    meta.textContent = "Mailbox unavailable";
+    list.appendChild(el("li", "mail-empty", `Could not read Gmail: ${box.error}`));
+    return;
+  }
+  if (box.simulated) {
+    meta.textContent = "Demo data — no Gmail provider configured";
+    list.appendChild(el("li", "mail-empty", "These are sample messages, not real mail."));
+  } else {
+    const total = box.totalMatching ? ` of ~${box.totalMatching} matching` : "";
+    meta.textContent = `Showing ${box.fetched}${total} · ${box.unread} unread · ${box.withAttachments} with attachments`;
+  }
+
+  if (!box.messages?.length) {
+    list.appendChild(el("li", "mail-empty", "No messages matched that search."));
+    return;
+  }
+
+  for (const m of box.messages) {
+    const li = el("li", `mail-item${m.unread ? " unread" : ""}`);
+    const head = el("div", "mail-item-head");
+    head.appendChild(el("span", "mail-from", m.fromName || m.from));
+    head.appendChild(el("span", "mail-when", relativeTime(m.date) || ""));
+    li.appendChild(head);
+    li.appendChild(el("div", "mail-subject", m.subject || "(no subject)"));
+    if (m.snippet) li.appendChild(el("div", "mail-snippet", m.snippet));
+    if (m.hasAttachments) li.appendChild(el("span", "mail-clip", "📎 attachment"));
+    // Bodies are fetched on demand so the panel stays fast on a large mailbox.
+    const pre = el("pre", "mail-body");
+    pre.hidden = true;
+    pre.textContent = m.body || "";
+    li.appendChild(pre);
+    const toggle = el("button", "text-btn mail-expand", "Show full text");
+    toggle.type = "button";
+    toggle.addEventListener("click", () => {
+      pre.hidden = !pre.hidden;
+      toggle.textContent = pre.hidden ? "Show full text" : "Hide full text";
+    });
+    li.appendChild(toggle);
+    list.appendChild(li);
+  }
+}
+
+async function loadMail(query) {
+  const meta = $("#mailMeta");
+  const q = query ?? ($("#mailQuery")?.value || "").trim();
+  if (meta) meta.textContent = "Reading mailbox…";
+  const params = new URLSearchParams({ max: "20" });
+  if (q) params.set("q", q);
+  try {
+    renderMail(await api(`/api/mail?${params.toString()}`));
+  } catch (err) {
+    if (meta) meta.textContent = "Mailbox unavailable";
+    const list = $("#mailList");
+    if (list) {
+      list.innerHTML = "";
+      list.appendChild(el("li", "mail-empty", `Could not reach the mail service: ${err.message}`));
+    }
+  }
+}
+
+// ============================================================
 // Theme Management (Dark & Light Mode)
 // ============================================================
 function initTheme() {
@@ -847,6 +932,7 @@ async function loadAll() {
         badge.textContent = d.unread || d.count;
       }
     }).catch(() => {}),
+    loadMail(),
   ];
 
   await Promise.allSettled(tasks);
@@ -1112,11 +1198,41 @@ function initInteractions() {
     });
   }
 
+  // Mail Reader
+  const mailForm = $("#mailSearchForm");
+  if (mailForm) {
+    mailForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      loadMail();
+    });
+  }
+  const refreshMailBtn = $("#refreshMail");
+  if (refreshMailBtn) {
+    refreshMailBtn.addEventListener("click", async () => {
+      const icon = $(".refresh-icon", refreshMailBtn);
+      if (icon) icon.style.transform = "rotate(360deg)";
+      await loadMail();
+      setTimeout(() => { if (icon) icon.style.transform = ""; }, 400);
+    });
+  }
+  const mailAskBtn = $("#mailAskBtn");
+  if (mailAskBtn) {
+    mailAskBtn.addEventListener("click", () => {
+      const q = ($("#mailQuery")?.value || "").trim();
+      const ask = q
+        ? `Read and summarise my email for "${q}" — what's actually in there and what needs me?`
+        : "Read and summarise my recent email — what's there and what needs me?";
+      sendChat(ask);
+      $("#inbox")?.scrollIntoView({ behavior: "smooth" });
+    });
+  }
+
   // Sidebar Navigation Links
   const navItems = [
     { id: "#navOverview", target: "#overview", tab: null },
     { id: "#navCalendar", target: "#today", tab: "today" },
     { id: "#navInbox", target: "#inbox", tab: null },
+    { id: "#navMail", target: "#mail", tab: null },
     { id: "#navTravel", target: "#today", tab: "flights" },
     { id: "#navReminders", target: "#remindersPanel", tab: null },
   ];

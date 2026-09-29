@@ -2,7 +2,7 @@ import { cfg, brainConfigured } from "./config.js";
 import { getPrefs, setPrefs } from "./prefs.js";
 import { searchFlights, bookFlight } from "./tools/flights.js";
 import { getTodaySummary, freeBusy, bookOrMove } from "./tools/calendar.js";
-import { inboxSummary, draftReply } from "./tools/email.js";
+import { inboxSummary, draftReply, readMail } from "./tools/email.js";
 import { addFlightToItinerary, getItinerary } from "./tools/itinerary.js";
 
 /**
@@ -130,6 +130,21 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "read_mailbox",
+      description:
+        "Read actual email messages with their real bodies. Use this whenever the boss asks what is in their inbox/mail, what a specific email says, or asks you to read and report on their email. Supports Gmail search syntax via `query` (e.g. \"is:unread\", \"from:boss\", \"newer_than:30d subject:invoice\"). Returns real sender, subject, date and body text.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Gmail search syntax. Defaults to unread mail." },
+          max: { type: "number", description: "How many messages to read (1-50, default 25)." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "draft_reply",
       description: "Draft an email reply for the boss to approve. Never sends.",
       parameters: {
@@ -217,6 +232,8 @@ async function runTool(name, args, ctx) {
       return getTodaySummary({ date: args.date });
     case "free_busy":
       return freeBusy({ date: args.date });
+    case "read_mailbox":
+      return readMail({ query: args.query, max: args.max });
     case "inbox_summary":
       return inboxSummary({});
     case "draft_reply":

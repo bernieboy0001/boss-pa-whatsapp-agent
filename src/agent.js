@@ -2,8 +2,9 @@ import { getPrefs } from "./prefs.js";
 import { cfg } from "./config.js";
 import { searchFlights, printFlights, bookFlight } from "./tools/flights.js";
 import { getTodaySummary, freeBusy, bookOrMove } from "./tools/calendar.js";
-import { inboxSummary, draftReply } from "./tools/email.js";
+import { inboxSummary, draftReply, readMail } from "./tools/email.js";
 import { addFlightToItinerary, viewItinerary } from "./tools/itinerary.js";
+import { zonedToday, addDays } from "./tools/zoned-time.js";
 import { brainConfigured, brainReply } from "./brain.js";
 
 /**
@@ -314,10 +315,30 @@ function extractSummary(low) {
 /* --------------------------------------------------------------------- email */
 
 async function handleEmail(low) {
+  // Fallback path (no brain): read the real mailbox rather than the old
+  // subject-regex triage, so the no-LLM answer is still honest.
+  const wantsRead = /read|what.*(in|inside|say|about)|summar|digest|unread|recent|latest/.test(low);
+  if (wantsRead) {
+    const box = await readMail({ query: "in:inbox newer_than:14d", max: 10 });
+    if (box.simulated) return `📥 Demo mail — no Gmail provider configured.\n\n${box.top}`;
+    if (box.error) return `📥 Could not read the mailbox: ${box.error}`;
+    if (!box.messages.length) return "📥 Nothing in the inbox for that search.";
+    const lines = [`📥 ${box.fetched} message${box.fetched === 1 ? "" : "s"} (${box.query})`, ""];
+    for (const m of box.messages) {
+      const flag = m.unread ? "●" : "○";
+      lines.push(`${flag} ${m.from} — ${m.subject}`);
+      if (m.snippet) lines.push(`   ${m.snippet}`);
+    }
+    lines.push("", `Showing ${box.fetched}${box.totalMatching ? ` of ~${box.totalMatching} matching` : ""}. Ask about a specific one to see more.`);
+    return lines.join("\n");
+  }
+
   const summary = await inboxSummary({});
-  const lines = [`📥 Inbox — ${summary.count} unread`, "", ...summary.urgent.map((e) => `• ${e.from}: "${e.subject}"`)];
+  if (summary.error) return `📥 Could not read the inbox: ${summary.error}`;
+  const lines = [`📥 Inbox — ${summary.count ?? summary.unread} unread${summary.simulated ? " (demo data)" : ""}`, ""];
+  for (const e of summary.urgent ?? []) lines.push(`• ${e.from}: "${e.subject}"`);
   if (/draft|reply/.test(low)) {
-    const d = await draftReply({ to: summary.urgent[0]?.from, topic: summary.urgent[0]?.subject });
+    const d = await draftReply({ to: summary.urgent?.[0]?.from, topic: summary.urgent?.[0]?.subject });
     lines.push("", `Draft for approval:\n${d.body}`);
   }
   return lines.join("\n");
@@ -329,8 +350,19 @@ function fmtLocal(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// "Today" must mean today in the boss's zone. On a UTC server these used to be
+// the server's date, which was a day off for most of the US evening.
 function localToday() {
-  return fmtLocal(new Date());
+  return zonedToday(cfg.bossTimezone ?? "America/New_York");
+}
+
+function dayOfWeekInZone() {
+  return Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: cfg.bossTimezone ?? "America/New_York",
+      weekday: "number",
+    }).format(new Date()),
+  ) % 7;
 }
 
 /** Friday / next Friday / tomorrow / today / 2026-06-01 */
@@ -338,12 +370,11 @@ function detectDate(t) {
   const named = /(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.exec(t);
   if (named) {
     const target = DAY_NAMES.indexOf(named[2]);
-    const d = new Date();
-    let diff = (target - d.getDay() + 7) % 7;
+    const today = zonedToday(cfg.bossTimezone ?? "America/New_York");
+    let diff = (target - dayOfWeekInZone() + 7) % 7;
     if (diff === 0) diff = 7; // "Friday" means the coming one, not today
     if (named[1]) diff += 7;
-    d.setDate(d.getDate() + diff);
-    return fmtLocal(d);
+    return addDays(today, diff);
   }
   if (/tomorrow/.test(t)) {
     const d = new Date();

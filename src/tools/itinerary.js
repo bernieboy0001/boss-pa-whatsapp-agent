@@ -1,6 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { getDoc, setDoc } from "../store.js";
 import { getEvents } from "./events.js";
 
 /**
@@ -10,40 +8,18 @@ import { getEvents } from "./events.js";
  * this store, and confirmed calendar events are folded in by date, so the
  * boss can ask "itinerary" and get the whole trip on screen. Tier-1 capability:
  * search → present → confirm → book → itinerary, all in one chat thread.
+ *
+ * Backed by the shared store, so a booked flight is still on the itinerary
+ * after a cold start instead of silently vanishing.
  */
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const DIR = join(ROOT, "data");
-const PATH = join(DIR, "itinerary.json");
-
-let cache = null;
-
-function load() {
-  if (cache) return cache;
-  try {
-    cache = existsSync(PATH) ? JSON.parse(readFileSync(PATH, "utf8")) : { trips: [] };
-  } catch {
-    cache = { trips: [] };
-  }
-  return cache;
-}
-
-function persist(data) {
-  try {
-    mkdirSync(DIR, { recursive: true });
-    writeFileSync(PATH, JSON.stringify(data, null, 2), "utf8");
-  } catch (err) {
-    console.warn("[itinerary] could not persist (read-only storage):", err.message);
-  }
-}
-
 export function getItinerary() {
-  return { trips: [...load().trips] };
+  return { trips: [...(getDoc("itinerary")?.trips ?? [])] };
 }
 
 /** Attach a confirmed flight to the matching trip, creating one if needed. */
 export function addFlightToItinerary(flight) {
-  const data = load();
+  const data = { trips: [...(getDoc("itinerary")?.trips ?? [])] };
   const origin = flight.origin ?? "";
   const destination = flight.destination ?? "";
   const date = flight.date ?? "";
@@ -62,21 +38,20 @@ export function addFlightToItinerary(flight) {
     price: flight.price,
     currency: flight.currency ?? "USD",
   });
-  cache = data;
-  persist(data);
+  setDoc("itinerary", data);
   return trip;
 }
 
 /** Friendly, chat-ready rendering of flights + confirmed calendar events by date. */
 export function viewItinerary() {
-  const data = load();
+  const { trips } = getItinerary();
   const events = getEvents();
-  if (!data.trips.length && !events.length) {
+  if (!trips.length && !events.length) {
     return "🧳 No trips or events yet — book a flight or schedule a meeting and it shows up here.";
   }
 
   const byDate = new Map();
-  for (const trip of data.trips) {
+  for (const trip of trips) {
     for (const f of trip.flights) {
       const date = trip.outbound || "unscheduled";
       if (!byDate.has(date)) byDate.set(date, []);

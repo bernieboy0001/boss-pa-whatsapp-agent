@@ -1,70 +1,57 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { listRecords, getRecord, putRecord, deleteRecord, hasRecord } from "../store.js";
 import { getPrefs } from "../prefs.js";
 import { eventsOn } from "./events.js";
 
 /**
  * Smart Reminders — flexible input → optimal time placement.
  * Considers: existing calendar, prefs.noMeetingsBefore, travel buffers, work hours.
+ *
+ * Backed by the shared store so a checked-off or deleted reminder stays that
+ * way across a cold start. Previously this was a JSON file that silently
+ * reverted to seed data whenever the instance was recycled.
  */
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const DIR = join(ROOT, "data");
-const REMINDER_PATH = join(DIR, "reminders.json");
+const SEED_FLAG = "reminders_seeded";
 
 const DEFAULT_REMINDERS = [
   { id: "rem_1", text: "Review Q3 board deck", due: null, recurring: null, status: "pending", created: new Date().toISOString() },
   { id: "rem_2", text: "Call Sarah re: M&A timeline", due: null, recurring: null, status: "pending", created: new Date().toISOString() },
 ];
 
-let cache = null;
-
-function load() {
-  if (cache) return cache;
-  try {
-    cache = existsSync(REMINDER_PATH) ? JSON.parse(readFileSync(REMINDER_PATH, "utf8")) : [...DEFAULT_REMINDERS];
-  } catch {
-    cache = [...DEFAULT_REMINDERS];
+/**
+ * Seed on a genuinely fresh store only. A "meta" record marks that seeding has
+ * happened, so a user who deletes every reminder does not get them back.
+ */
+function seed() {
+  if (hasRecord("meta", SEED_FLAG)) return;
+  if (listRecords("reminders").length === 0) {
+    for (const rec of DEFAULT_REMINDERS) putRecord("reminders", rec.id, rec);
   }
-  return cache;
+  putRecord("meta", SEED_FLAG, { at: new Date().toISOString() });
 }
 
-function persist(list) {
-  cache = list;
-  try {
-    mkdirSync(DIR, { recursive: true });
-    writeFileSync(REMINDER_PATH, JSON.stringify(list, null, 2), "utf8");
-  } catch (err) {
-    console.warn("[reminders] could not persist (read-only storage):", err.message);
-  }
+export function getReminders() {
+  seed();
+  return listRecords("reminders");
 }
-
-export function getReminders() { return [...load()]; }
 
 export function addReminder(reminder) {
-  const list = load();
-  const rec = { id: `rem_${Date.now().toString(36)}`, ...reminder, status: "pending", created: new Date().toISOString() };
-  list.push(rec);
-  persist(list);
-  return rec;
+  seed();
+  return putRecord("reminders", `rem_${Date.now().toString(36)}`, {
+    ...reminder,
+    status: "pending",
+    created: new Date().toISOString(),
+  });
 }
 
 export function updateReminder(id, patch) {
-  const list = load();
-  const i = list.findIndex((r) => r.id === id);
-  if (i === -1) return null;
-  list[i] = { ...list[i], ...patch };
-  persist(list);
-  return list[i];
+  const existing = getRecord("reminders", id);
+  if (!existing) return null;
+  return putRecord("reminders", id, { ...existing, ...patch });
 }
 
 export function deleteReminder(id) {
-  const list = load();
-  const next = list.filter((r) => r.id !== id);
-  if (next.length === list.length) return false;
-  persist(next);
-  return true;
+  return deleteRecord("reminders", id);
 }
 
 /**
