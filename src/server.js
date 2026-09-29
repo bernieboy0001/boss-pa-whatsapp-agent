@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cfg } from "./config.js";
+import { cfg, brainConfigured } from "./config.js";
 import { handleMessage } from "./agent.js";
 import { normalizeInbound, sendText, verifyWebhook } from "./photon.js";
 import { viewItinerary } from "./tools/itinerary.js";
@@ -35,9 +35,21 @@ function sessionFor(from) {
   return sessions.get(key);
 }
 
-app.get("/healthz", (_req, res) => res.json({ ok: true, provider: cfg.channelProvider, flights: cfg.flightProvider }));
+// Reports what is genuinely live vs. simulated, so the dashboard can label
+// stubbed providers instead of presenting mock data as real results.
+function healthStatus() {
+  return {
+    ok: true,
+    provider: cfg.channelProvider,
+    flights: cfg.flightProvider,
+    flightsSimulated: cfg.flightProvider === "stub",
+    brain: brainConfigured(),
+    brainModel: brainConfigured() ? cfg.llmModel : null,
+  };
+}
+app.get("/healthz", (_req, res) => res.json(healthStatus()));
 // Alias so the Vercel catch-all function can serve the health check too.
-app.get("/api/healthz", (_req, res) => res.json({ ok: true, provider: cfg.channelProvider, flights: cfg.flightProvider }));
+app.get("/api/healthz", (_req, res) => res.json(healthStatus()));
 
 // --- Dashboard API ---
 
@@ -155,9 +167,13 @@ app.get("/api/legal-templates", legalTemplates);
 app.post("/api/chat", async (req, res) => {
   const { text } = req.body ?? {};
   if (!text) return res.status(400).json({ error: "text required" });
+  // Mutable bag the agent fills in when it could not use the brain, so the UI
+  // can say "running in fallback mode" instead of showing a generic HELP reply
+  // that is indistinguishable from the assistant misunderstanding the user.
+  const degraded = {};
   try {
-    const reply = await handleMessage(text, { session: sessionFor("dashboard") });
-    res.json({ text: reply });
+    const reply = await handleMessage(text, { session: sessionFor("dashboard"), degraded });
+    res.json({ text: reply, degraded: Object.keys(degraded).length ? degraded : null });
   } catch (err) {
     console.error("[chat] agent error:", err.message);
     res.status(500).json({ error: err.message });

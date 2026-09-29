@@ -342,7 +342,21 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 30px;
 }
 
-.chat-messages { flex: 1; display: flex; align-items: center; }
+/* Messages stack vertically. This was `display:flex` with the default row
+   direction, which laid every message out side-by-side and overflowed the
+   88%-width bubbles. */
+.chat-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  overflow-y: auto;
+  max-height: 340px;
+  min-height: 90px;
+  padding: 4px 2px 2px;
+  scrollbar-width: thin;
+}
 .welcome-message { display: flex; gap: 13px; align-items: center; color: var(--muted); font-size: 12px; line-height: 1.5; max-width: 355px; }
 .assistant-orb {
   width: 31px;
@@ -364,9 +378,129 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   max-width: 88%;
   font-size: 12px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .chat-msg.you { display: flex; justify-content: flex-end; }
 .chat-msg.you .msg-bubble { background: var(--bubble-you); color: var(--bubble-you-text); border-color: transparent; }
+.muted-bubble { color: var(--dim); font-style: italic; }
+.error-bubble { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+
+/* --- Agent reply cards ------------------------------------------------- */
+
+.ai-card {
+  background: var(--surface2);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 12px;
+  max-width: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-card-pending { border-color: color-mix(in srgb, var(--primary) 55%, var(--line-strong)); }
+.ai-card-ok { border-color: color-mix(in srgb, var(--green) 45%, var(--line-strong)); }
+.ai-card-warn { border-color: color-mix(in srgb, var(--danger) 40%, var(--line-strong)); }
+
+.ai-card-head { display: flex; align-items: flex-start; gap: 10px; }
+.ai-card-icon {
+  width: 26px; height: 26px; flex: 0 0 26px;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary);
+  font-size: 13px;
+}
+.ai-card-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ai-card-title { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+.ai-card-sub { font-size: 10.5px; color: var(--dim); }
+.ai-card-empty, .ai-card-foot { margin: 0; font-size: 11px; color: var(--dim); }
+.ai-warn { margin: 0; font-size: 10.5px; color: var(--danger); line-height: 1.5; }
+
+.flight-list { display: flex; flex-direction: column; gap: 6px; }
+.flight-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.flight-row:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--line)); background: var(--surface-hover); }
+.flight-main { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.flight-id {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  padding: 3px 6px; border-radius: 5px;
+}
+.flight-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.flight-carrier { font-size: 11.5px; color: var(--text); }
+.flight-times { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.flight-meta { font-size: 10px; color: var(--dim); }
+.flight-price {
+  font-size: 11.5px; color: var(--primary-light);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+.agenda-list, .inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.agenda-item { display: flex; gap: 10px; align-items: baseline; font-size: 11.5px; }
+.agenda-time { color: var(--primary); font-variant-numeric: tabular-nums; flex: 0 0 40px; }
+.agenda-title { color: var(--text); overflow-wrap: anywhere; }
+.inbox-item { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.inbox-item:last-child { border-bottom: 0; }
+.inbox-from { font-size: 10.5px; color: var(--dim); }
+.inbox-subject { font-size: 11.5px; color: var(--text); overflow-wrap: anywhere; }
+
+.ai-card-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+.chat-action {
+  font-size: 10.5px;
+  padding: 6px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  background: var(--surface);
+  transition: color 0.2s, border-color 0.2s, background-color 0.2s, opacity 0.2s;
+  white-space: nowrap;
+}
+.chat-action:hover:not(:disabled) { color: var(--primary-light); border-color: var(--primary); }
+.chat-action.is-primary {
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: transparent;
+  font-weight: 600;
+}
+.chat-action.is-primary:hover:not(:disabled) { background: var(--primary-light); color: var(--on-primary); }
+.chat-action:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* --- Typing indicator --------------------------------------------------- */
+
+.msg-bubble.typing { display: flex; align-items: center; gap: 8px; width: fit-content; }
+.typing-label { font-size: 11px; color: var(--muted); }
+.typing-secs { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.typing-dots { color: var(--dim); letter-spacing: 2px; animation: dots-blink 1.4s steps(4) infinite; }
+@keyframes dots-blink { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+.stop-btn {
+  font-size: 11px;
+  padding: 9px 12px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line-strong));
+  border-radius: 9px;
+  background: none;
+  white-space: nowrap;
+}
+.stop-btn:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+/* --- Status pill states ------------------------------------------------- */
+
+.pill.thinking { color: var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); }
+.pill.fallback { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.pill.offline { color: var(--danger); background: color-mix(in srgb, var(--danger) 18%, transparent); }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.status-dot.is-warn { background: var(--danger); }
+.status-dot.is-error { background: var(--danger); }
+.send-btn:disabled, .chat-input-form input:disabled { opacity: 0.5; }
 
 .chat-input-form {
   display: flex;

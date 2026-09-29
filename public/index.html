@@ -168,6 +168,7 @@
             <button class="send-btn" id="sendBtn" type="submit" aria-label="Send message">
               Send <span class="send-arrow">↗</span>
             </button>
+            <button class="stop-btn" id="stopBtn" type="button" hidden>Stop</button>
           </form>
 
           <div class="suggestions" id="chatSuggestions">
@@ -407,11 +408,11 @@
           </div>
           <div class="profile-stat-row">
             <span>AI Brain Engine</span>
-            <span>Gemini / Multi-Model Autopilot</span>
+            <span id="brainEngineLabel">Checking…</span>
           </div>
           <div class="profile-stat-row">
             <span>Connected Channels</span>
-            <span>WhatsApp Business, Dashboard Webhook</span>
+            <span id="channelLabel">Checking…</span>
           </div>
           <div class="profile-stat-row">
             <span>Calendar Provider</span>
@@ -419,7 +420,7 @@
           </div>
           <div class="profile-stat-row">
             <span>Flight Engine</span>
-            <span>Global Amadeus / Flight Search</span>
+            <span id="flightEngineLabel">Checking…</span>
           </div>
         </div>
         <div class="modal-actions">

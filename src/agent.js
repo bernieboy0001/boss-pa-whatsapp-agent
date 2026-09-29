@@ -1,4 +1,5 @@
 import { getPrefs } from "./prefs.js";
+import { cfg } from "./config.js";
 import { searchFlights, printFlights, bookFlight } from "./tools/flights.js";
 import { getTodaySummary, freeBusy, bookOrMove } from "./tools/calendar.js";
 import { inboxSummary, draftReply } from "./tools/email.js";
@@ -24,6 +25,9 @@ const HELP = 'Say something like: "flights JFK to LHR Friday", "schedule 1:1 wit
 
 export async function handleMessage(text, opts = {}) {
   const session = opts.session ?? {};
+  // Optional mutable bag. Callers that care (the dashboard) pass one so a
+  // fallback reply can be flagged; the CLI and WhatsApp ignore it entirely.
+  const degraded = opts.degraded ?? {};
   const t = String(text ?? "").trim();
   const low = t.toLowerCase();
 
@@ -56,15 +60,30 @@ export async function handleMessage(text, opts = {}) {
     try {
       const answer = await brainReply(t, { session });
       if (answer) return answer;
+      degraded.reason = "empty-answer";
     } catch (err) {
       console.warn("[agent] brain failed:", err.message);
+      degraded.reason = "brain-error";
+      degraded.detail = err.message;
     }
+  } else {
+    degraded.reason = "no-key";
   }
 
+  if (!isFlightQuery(low)) degraded.fallback = "router";
   return isFlightQuery(low) ? handleFlights(low, session) : HELP;
 }
 
 /* --------------------------------------------------------------- intent match */
+
+/**
+ * True when no live flight provider is wired up. flights.js falls back to
+ * synthetic options in that mode, so anything derived from them (fares,
+ * booking refs) is fabricated and must never be presented as real.
+ */
+function flightsAreSimulated() {
+  return cfg.flightProvider === "stub";
+}
 
 function isFlightQuery(low) {
   return (
@@ -136,14 +155,24 @@ async function handleFlights(low, session) {
 
   session.pendingFlight = { origin, destination, date, passengers, cabin, results };
 
-  return [
+  const simulated = flightsAreSimulated();
+  const out = [
     `✈️ ${origin} → ${destination} — ${date || "your travel date"}`,
     `(${roundTrip ? "round-trip" : "one-way"} · ${passengers} pax · ${cabin})`,
     "",
     printFlights(results),
     "",
-    `Reply "book f1" (or "confirm" for the first option) and I'll book it.`,
-  ].join("\n");
+  ];
+
+  if (simulated) {
+    out.push(
+      `⚠️ Simulated options — no live flight data source is connected (FLIGHT_PROVIDER=stub).`,
+      `Nothing here is a real fare or a real booking. Add Amadeus or Google Flights credentials to go live.`,
+    );
+  } else {
+    out.push(`Reply "book f1" (or "confirm" for the first option) and I'll book it.`);
+  }
+  return out.join("\n");
 }
 
 async function confirmFlight(low, session) {
@@ -170,6 +199,14 @@ async function confirmFlight(low, session) {
 
   const depart = String(choice.departTime ?? "");
   const when = depart.length > 10 ? depart.slice(11) : depart.trim();
+
+  if (flightsAreSimulated()) {
+    return [
+      `⚠️ Not a real booking.`,
+      `${ticket.airline} ${ticket.flightNo} (${origin} → ${destination} · ${date} · ${when}) is a placeholder from the stub provider.`,
+      `No ticket was issued and nothing was charged. Connect a live flight provider to enable real bookings.`,
+    ].join("\n");
+  }
 
   return [
     `✅ Booked — ${ticket.airline} ${ticket.flightNo}`,

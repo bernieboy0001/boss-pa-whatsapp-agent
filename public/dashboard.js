@@ -17,6 +17,11 @@ const state = {
   templates: [],
   voiceRecognition: null,
   isListening: false,
+  chat: {
+    inFlight: false,
+    controller: null,
+    secondsEl: null,
+  },
 };
 
 // ============================================================
@@ -159,65 +164,397 @@ function showTab(tabName, panel) {
 // ============================================================
 // Chat Controller
 // ============================================================
-function renderChat(msg, isUser = false) {
-  const messagesContainer = $("#chatMessages");
-  if (!messagesContainer) return;
 
-  const div = document.createElement("div");
-  div.className = `chat-msg ${isUser ? "you" : "bot"}`;
-  
-  // Format text: convert newlines to <br>, bold markdown **text** to <strong>
-  let formatted = escapeHtml(msg).replace(/\n/g, "<br>");
-  formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-
-  div.innerHTML = `<div class="msg-bubble">${formatted}</div>`;
-  messagesContainer.appendChild(div);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+/** Small DOM builder. Uses textContent throughout, so agent output is never
+ *  interpreted as markup. */
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
 }
 
-function showTypingIndicator() {
-  let indicator = $("#typingIndicator");
-  if (!indicator) {
-    indicator = document.createElement("div");
-    indicator.id = "typingIndicator";
-    indicator.className = "chat-msg bot";
-    indicator.innerHTML = `
-      <div class="msg-bubble" style="display:flex;align-items:center;gap:6px;padding:8px 14px">
-        <span style="font-size:11px;color:var(--dim)">PA thinking</span>
-        <span class="status-pulse" style="width:5px;height:5px"></span>
-      </div>`;
-    $("#chatMessages")?.appendChild(indicator);
-    $("#chatMessages").scrollTop = $("#chatMessages").scrollHeight;
+function scrollChat() {
+  const c = $("#chatMessages");
+  if (c) c.scrollTop = c.scrollHeight;
+}
+
+function appendMessage(node, { isUser = false } = {}) {
+  const container = $("#chatMessages");
+  if (!container) return;
+  container.querySelector(".welcome-message")?.remove();
+  const wrap = el("div", `chat-msg ${isUser ? "you" : "bot"}`);
+  wrap.appendChild(node);
+  container.appendChild(wrap);
+  scrollChat();
+  return wrap;
+}
+
+function actionButton(label, prompt, variant = "") {
+  const b = el("button", `chat-action ${variant}`.trim(), label);
+  b.type = "button";
+  b.addEventListener("click", () => {
+    // sendChat() already drops duplicate submissions; bail out before
+    // disabling so a click during an in-flight request cannot strand this
+    // button in a permanently disabled state.
+    if (state.chat.inFlight) return;
+    b.disabled = true;
+    sendChat(prompt);
+  });
+  return b;
+}
+
+/**
+ * The agent replies in plain text, but that text is highly structured:
+ * numbered flight options, calendar proposals, day agendas, inbox digests.
+ * Parsing it here lets the UI render real cards and clickable actions instead
+ * of one undifferentiated text wall. Anything unrecognised stays a plain
+ * bubble, so this never swallows content it does not understand.
+ */
+function classifyReply(raw) {
+  const text = String(raw ?? "");
+  const lines = text.split("\n");
+  const first = lines[0] ?? "";
+
+  // "f1 · Delta DL120 · 06:10 → 08:40 · nonstop · 7h 05m · 399 USD"
+  const options = lines
+    .map((l) => /^f(\d+)\s+·\s+(.+)$/.exec(l.trim()))
+    .filter(Boolean)
+    .map((m) => ({ id: `f${m[1]}`, fields: m[2].split("·").map((s) => s.trim()) }));
+  if (options.length) {
+    return {
+      kind: "flights",
+      route: first.replace(/^✈️\s*/, "").trim(),
+      meta: (lines[1] || "").replace(/^\(|\)$/g, "").trim(),
+      options,
+      simulated: /simulated options/i.test(text),
+      canBook: /book f1/i.test(text),
+    };
+  }
+
+  const proposal = /📅\s*Proposed:\s*(\w+)\s+"([^"]*)"/.exec(text);
+  if (proposal) {
+    return {
+      kind: "proposal",
+      action: proposal[1].toLowerCase(),
+      summary: proposal[2],
+      when: (/^When:\s*(.+)$/m.exec(text)?.[1] || "").trim(),
+    };
+  }
+
+  const calDone = /^📅\s*(Booked|Moved|Cancelled)\s*—\s*"([^"]*)"/.exec(text);
+  if (calDone) {
+    return {
+      kind: "confirmed",
+      verb: calDone[1],
+      summary: calDone[2],
+      detail: lines.slice(1).filter(Boolean).join(" · "),
+    };
+  }
+
+  if (/^✅\s*Booked/.test(text)) {
+    return {
+      kind: "booked",
+      title: first.replace(/^✅\s*/, "").trim(),
+      detail: lines.slice(1).filter(Boolean).join(" · "),
+    };
+  }
+
+  if (/^⚠️/.test(text)) {
+    return { kind: "notice", text };
+  }
+
+  const agenda = /^🗓\s+(.+?)\s*—\s*(\S+)/.exec(first);
+  if (agenda) {
+    return {
+      kind: "agenda",
+      day: agenda[1],
+      date: agenda[2],
+      items: lines
+        .slice(2)
+        .map((l) => l.trim())
+        .filter((l) => /^\d{2}:\d{2}\s+\S/.test(l))
+        .map((l) => ({ time: l.slice(0, 5), title: l.slice(5).trim() })),
+      runway: lines.map((l) => l.trim()).filter((l) => /^(Free|Busy):/.test(l)),
+    };
+  }
+
+  const inbox = /^📥\s*Inbox\s*—\s*(\d+)\s*unread/.exec(first);
+  if (inbox) {
+    return {
+      kind: "inbox",
+      count: Number(inbox[1]),
+      items: lines
+        .map((l) => /^\s*•\s*(.+?):\s*"([^"]*)"/.exec(l))
+        .filter(Boolean)
+        .map((m) => ({ from: m[1], subject: m[2] })),
+    };
+  }
+
+  return { kind: "plain", text };
+}
+
+/* ------------------------------------------------------------ card renderers */
+
+function cardHeader(icon, title, sub) {
+  const head = el("div", "ai-card-head");
+  head.appendChild(el("span", "ai-card-icon", icon));
+  const wrap = el("div", "ai-card-head-text");
+  wrap.appendChild(el("strong", "ai-card-title", title));
+  if (sub) wrap.appendChild(el("span", "ai-card-sub", sub));
+  head.appendChild(wrap);
+  return head;
+}
+
+function flightCard(d) {
+  const card = el("div", "ai-card");
+  card.appendChild(cardHeader("✈", d.route, d.meta));
+
+  const list = el("div", "flight-list");
+  for (const opt of d.options) {
+    const [carrier = "", times = "", stops = "", dur = "", price = ""] = opt.fields;
+    const row = el("div", "flight-row");
+
+    const main = el("div", "flight-main");
+    main.appendChild(el("span", "flight-id", opt.id.toUpperCase()));
+    const body = el("div", "flight-body");
+    body.appendChild(el("span", "flight-carrier", carrier));
+    if (times) body.appendChild(el("span", "flight-times", times));
+    const meta = [stops, dur].filter(Boolean).join(" · ");
+    if (meta) body.appendChild(el("span", "flight-meta", meta));
+    main.appendChild(body);
+    row.appendChild(main);
+
+    if (price) row.appendChild(el("span", "flight-price", price));
+    if (d.canBook) row.appendChild(actionButton("Book", `book ${opt.id}`, "is-primary"));
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+
+  if (d.simulated) {
+    card.appendChild(
+      el("p", "ai-warn", "Simulated fares — no live flight provider is connected, so these cannot be booked."),
+    );
+  }
+  return card;
+}
+
+function proposalCard(d) {
+  const card = el("div", "ai-card ai-card-pending");
+  card.appendChild(cardHeader("📅", `${d.action} "${d.summary}"`, d.when || "unscheduled"));
+  const actions = el("div", "ai-card-actions");
+  actions.appendChild(actionButton("Confirm", "confirm", "is-primary"));
+  actions.appendChild(actionButton("Never mind", "never mind", "is-ghost"));
+  card.appendChild(actions);
+  return card;
+}
+
+function agendaCard(d) {
+  const card = el("div", "ai-card");
+  card.appendChild(cardHeader("🗓", `${d.day} — ${d.date}`, `${d.items.length} scheduled`));
+  if (!d.items.length) {
+    card.appendChild(el("p", "ai-card-empty", "Nothing scheduled. Clear runway."));
+  } else {
+    const list = el("ul", "agenda-list");
+    for (const it of d.items) {
+      const li = el("li", "agenda-item");
+      li.appendChild(el("span", "agenda-time", it.time));
+      li.appendChild(el("span", "agenda-title", it.title));
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+  }
+  for (const r of d.runway) card.appendChild(el("p", "ai-card-foot", r));
+  return card;
+}
+
+function inboxCard(d) {
+  const card = el("div", "ai-card");
+  card.appendChild(cardHeader("📥", `Inbox — ${d.count} unread`, d.count ? "Needs triage" : "All clear"));
+  if (!d.items.length) {
+    card.appendChild(el("p", "ai-card-empty", "No urgent or promise-bearing mail."));
+  } else {
+    const list = el("ul", "inbox-list");
+    for (const m of d.items) {
+      const li = el("li", "inbox-item");
+      li.appendChild(el("span", "inbox-from", m.from));
+      li.appendChild(el("span", "inbox-subject", m.subject));
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+  }
+  return card;
+}
+
+function noticeCard(text) {
+  const card = el("div", "ai-card ai-card-warn");
+  card.appendChild(cardHeader("⚠", "Heads up", ""));
+  const p = el("p", "ai-warn");
+  p.textContent = text;
+  card.appendChild(p);
+  return card;
+}
+
+function renderDescriptor(d) {
+  switch (d.kind) {
+    case "flights": return flightCard(d);
+    case "proposal": return proposalCard(d);
+    case "agenda": return agendaCard(d);
+    case "inbox": return inboxCard(d);
+    case "notice": return noticeCard(d.text);
+    case "confirmed": return confirmedCard("📅", `${d.verb} — "${d.summary}"`, d.detail);
+    case "booked": return confirmedCard("✅", d.title, d.detail);
+    default: {
+      const bubble = el("div", "msg-bubble");
+      bubble.textContent = d.text;
+      return bubble;
+    }
   }
 }
 
+function confirmedCard(icon, title, detail) {
+  const card = el("div", "ai-card ai-card-ok");
+  card.appendChild(cardHeader(icon, title, detail));
+  return card;
+}
+
+const DEGRADE_COPY = {
+  "no-key": "No model key is configured, so that came from the pattern matcher rather than the AI.",
+  "brain-error": "The model call failed, so that came from the pattern matcher rather than the AI.",
+  "empty-answer": "The model returned nothing usable, so that came from the pattern matcher.",
+};
+
+function renderAgentReply(text, degraded) {
+  if (degraded) {
+    const card = el("div", "ai-card ai-card-warn");
+    card.appendChild(cardHeader("⚠", "Fallback mode", DEGRADE_COPY[degraded.reason] || "Running without the model."));
+    appendMessage(card);
+  }
+  appendMessage(renderDescriptor(classifyReply(text)));
+}
+
+/* ---------------------------------------------------------------- status pill */
+
+const STATUS = {
+  ready: { text: "Ready", dot: "live-dot pulse" },
+  thinking: { text: "Thinking…", dot: "live-dot pulse" },
+  fallback: { text: "Fallback", dot: "status-dot is-warn" },
+  offline: { text: "Unreachable", dot: "status-dot is-error" },
+};
+
+function setAgentStatus(status, detail = "") {
+  const pill = $("#agentPill");
+  if (!pill) return;
+  const s = STATUS[status] || STATUS.ready;
+  pill.className = `pill pill-${status}`;
+  pill.replaceChildren();
+  pill.append(el("i", s.dot), document.createTextNode(detail ? `${s.text} · ${detail}` : s.text));
+}
+
+/* ------------------------------------------------------------- typing + send */
+
+function showTypingIndicator() {
+  hideTypingIndicator();
+  const bubble = el("div", "msg-bubble typing");
+  bubble.append(el("span", "typing-label", "PA thinking"));
+  const secs = el("span", "typing-secs", "0.0s");
+  bubble.append(secs, el("span", "typing-dots", "···"));
+  state.chat.secondsEl = secs;
+  const wrap = appendMessage(bubble);
+  if (wrap) wrap.id = "typingIndicator";
+}
+
 function hideTypingIndicator() {
-  const indicator = $("#typingIndicator");
-  if (indicator) indicator.remove();
+  $("#typingIndicator")?.closest(".chat-msg")?.remove();
+  state.chat.secondsEl = null;
+}
+
+function setChatBusy(busy) {
+  const input = $("#chatInput");
+  const send = $("#sendBtn");
+  const stop = $("#stopBtn");
+  if (input) input.disabled = busy;
+  if (send) send.disabled = busy;
+  if (stop) stop.hidden = !busy;
 }
 
 async function sendChat(text) {
-  if (!text) return;
-  renderChat(text, true);
+  const trimmed = String(text ?? "").trim();
+  // One request at a time: without this, replies can land out of order.
+  if (!trimmed || state.chat.inFlight) return;
+
+  appendMessage(el("div", "msg-bubble", trimmed), { isUser: true });
+
+  state.chat.inFlight = true;
+  state.chat.controller = new AbortController();
+  setChatBusy(true);
+  setAgentStatus("thinking");
   showTypingIndicator();
+
+  const started = Date.now();
+  const ticker = setInterval(() => {
+    if (state.chat.secondsEl) {
+      state.chat.secondsEl.textContent = `${((Date.now() - started) / 1000).toFixed(1)}s`;
+    }
+  }, 100);
 
   try {
     const res = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text: trimmed }),
+      signal: state.chat.controller.signal,
     });
     hideTypingIndicator();
-    renderChat(res.text || res.reply || "Done.", false);
-
-    // If chat involved booking or scheduling, auto-refresh today & itinerary
-    if (/booked|scheduled|confirmed|added/i.test(res.text || "")) {
+    const reply = res.text || "Done.";
+    renderAgentReply(reply, res.degraded);
+    setAgentStatus(res.degraded ? "fallback" : "ready");
+    if (/booked|scheduled|confirmed|added/i.test(reply)) {
       loadDay();
       loadItinerary();
       loadReminders();
     }
   } catch (err) {
     hideTypingIndicator();
-    renderChat(`Could not reach PA agent: ${err.message}. Please check your connection.`, false);
+    if (err.name === "AbortError") {
+      appendMessage(el("div", "msg-bubble muted-bubble", "Stopped."));
+      setAgentStatus("ready");
+    } else {
+      appendMessage(el("div", "msg-bubble error-bubble", `Could not reach the assistant: ${err.message}`));
+      setAgentStatus("offline");
+    }
+  } finally {
+    clearInterval(ticker);
+    state.chat.inFlight = false;
+    state.chat.controller = null;
+    setChatBusy(false);
+    $("#chatInput")?.focus();
+  }
+}
+
+/** Reflect what is genuinely live vs. simulated, so the profile panel and the
+ *  status pill stop claiming capabilities the deployment does not have. */
+async function loadRuntimeStatus() {
+  const setLabel = (id, value) => {
+    const node = $(id);
+    if (node) node.textContent = value;
+  };
+  try {
+    const h = await api("/api/healthz");
+    setLabel(
+      "#brainEngineLabel",
+      h.brain ? h.brainModel || "OpenAI-compatible provider" : "Not configured — pattern matcher only",
+    );
+    setLabel(
+      "#flightEngineLabel",
+      h.flightsSimulated ? "Simulated (no live provider)" : `Live — ${h.flights}`,
+    );
+    setLabel("#channelLabel", h.provider === "stub" ? "Dashboard only" : h.provider);
+    setAgentStatus(h.brain ? "ready" : "fallback", h.brain ? "" : "no model key");
+    if (h.flightsSimulated) {
+      showToast("Flight search is simulated — no live provider connected", "warn");
+    }
+  } catch {
+    setAgentStatus("offline");
   }
 }
 
@@ -545,6 +882,13 @@ function initInteractions() {
     });
   }
 
+  // Stop an in-flight request rather than leaving the user waiting on a
+  // slow model call with no way out.
+  const stopBtn = $("#stopBtn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => state.chat.controller?.abort());
+  }
+
   // Suggestion chips
   $$("#chatSuggestions .chip-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -808,4 +1152,5 @@ document.addEventListener("DOMContentLoaded", () => {
   initVoice();
   initInteractions();
   loadAll();
+  loadRuntimeStatus();
 });
