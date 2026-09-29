@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build:api",
+  "outputDirectory": "public",
+  "installCommand": "npm install",
+  "functions": {
+    "api/[...path].js": {
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/healthz", "destination": "/api/healthz" },
+    { "source": "/webhook/photon", "destination": "/api/webhook-photon" }
+  ]
+}

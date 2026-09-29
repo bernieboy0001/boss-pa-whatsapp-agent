@@ -1,4 +1,5 @@
 import express from "express";
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,32 +36,53 @@ function sessionFor(from) {
 }
 
 app.get("/healthz", (_req, res) => res.json({ ok: true, provider: cfg.channelProvider, flights: cfg.flightProvider }));
+// Alias so the Vercel catch-all function can serve the health check too.
+app.get("/api/healthz", (_req, res) => res.json({ ok: true, provider: cfg.channelProvider, flights: cfg.flightProvider }));
 
 // --- Dashboard API ---
 
 app.get("/api/itinerary", (_req, res) => res.json({ text: viewItinerary() }));
 
-app.get("/api/day", (req, res) => {
-  const date = req.query.date || undefined;
-  const summary = getTodaySummary({ date });
-  const fb = freeBusy({ date: summary.date });
-  res.json({ summary, freeBusy: fb });
-});
-
-app.get("/api/week", (req, res) => {
-  const start = req.query.start ? new Date(req.query.start) : new Date();
-  const days = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    const date = d.toISOString().slice(0, 10);
-    const summary = getTodaySummary({ date });
-    days.push({ date, summary: summary.items });
+// The calendar + email tools are async (Google OAuth), so every route that
+// touches them must await. Skipping the await serialises a Promise to `{}`.
+app.get("/api/day", async (req, res) => {
+  try {
+    const date = req.query.date || undefined;
+    const summary = await getTodaySummary({ date });
+    const fb = await freeBusy({ date: summary?.date || date });
+    res.json({ summary, freeBusy: fb });
+  } catch (e) {
+    console.error("[api/day] error:", e);
+    res.status(500).json({ error: e.message });
   }
-  res.json({ days });
 });
 
-app.get("/api/inbox", (_req, res) => res.json(inboxSummary({})));
+app.get("/api/week", async (req, res) => {
+  try {
+    const start = req.query.start ? new Date(req.query.start) : new Date();
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      const date = d.toISOString().slice(0, 10);
+      const summary = await getTodaySummary({ date });
+      days.push({ date, summary: summary?.items ?? [] });
+    }
+    res.json({ days });
+  } catch (e) {
+    console.error("[api/week] error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/inbox", async (_req, res) => {
+  try {
+    res.json(await inboxSummary({}));
+  } catch (e) {
+    console.error("[api/inbox] error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get("/api/prefs", (_req, res) => res.json(getPrefs()));
 app.patch("/api/prefs", (req, res) => res.json(setPrefs(req.body)));
@@ -73,18 +95,36 @@ app.post("/api/reminders", (req, res) => {
   const rem = addReminder({ text, due: suggested, recurring: recurring ?? null });
   res.json(rem);
 });
-app.patch("/api/reminders/:id", (req, res) => {
-  const updated = updateReminder(req.params.id, req.body);
+// Mutations are addressed as /api/reminders?id=… on purpose. In the Vercel
+// catch-all configuration only *single-segment* /api/* paths are routed to the
+// function — a nested path like /api/reminders/rem_1 never reaches it and 404s
+// at the edge. Both shapes are registered so local dev and nested callers work.
+const reminderId = (req) => req.params.id || req.query.id || null;
+
+function patchReminder(req, res) {
+  const id = reminderId(req);
+  if (!id) return res.status(400).json({ error: "id required" });
+  const updated = updateReminder(id, req.body);
   if (!updated) return res.status(404).json({ error: "not found" });
   res.json(updated);
-});
-app.delete("/api/reminders/:id", (req, res) => {
-  const ok = deleteReminder(req.params.id);
+}
+
+function removeReminder(req, res) {
+  const id = reminderId(req);
+  if (!id) return res.status(400).json({ error: "id required" });
+  const ok = deleteReminder(id);
   if (!ok) return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
-});
+}
 
-app.get("/api/legal/search", async (req, res) => {
+app.patch("/api/reminders/:id", patchReminder);
+app.patch("/api/reminders", patchReminder);
+app.delete("/api/reminders/:id", removeReminder);
+app.delete("/api/reminders", removeReminder);
+
+// Single-segment aliases (/api/legal-search, /api/legal-templates) are what the
+// Vercel catch-all can actually route; the nested paths are kept for local use.
+async function legalSearch(req, res) {
   const q = req.query.q || "";
   if (!q) return res.json({ results: [] });
   try {
@@ -93,9 +133,9 @@ app.get("/api/legal/search", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
+}
 
-app.get("/api/legal/templates", async (req, res) => {
+async function legalTemplates(req, res) {
   const { category, jurisdiction } = req.query;
   try {
     const results = await findTemplates({ category, jurisdiction });
@@ -103,7 +143,12 @@ app.get("/api/legal/templates", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
+}
+
+app.get("/api/legal/search", legalSearch);
+app.get("/api/legal-search", legalSearch);
+app.get("/api/legal/templates", legalTemplates);
+app.get("/api/legal-templates", legalTemplates);
 
 // --- Chat API (dashboard) ---
 
@@ -121,7 +166,7 @@ app.post("/api/chat", async (req, res) => {
 
 // --- WhatsApp Webhook ---
 
-app.post("/webhook/photon", async (req, res) => {
+async function photonWebhook(req, res) {
   if (!verifyWebhook(req)) return res.status(401).json({ error: "bad webhook secret" });
 
   const { from, text } = normalizeInbound(req.body);
@@ -137,11 +182,22 @@ app.post("/webhook/photon", async (req, res) => {
     console.error("[webhook] agent error:", err.message);
     await sendText(from, "Sorry — something went wrong handling that. Try again?").catch(() => {});
   }
-});
+}
 
-// SPA fallback
-app.get("*", (_req, res) => {
-  res.sendFile(join(PUBLIC_DIR, "index.html"));
+// /webhook/photon is two segments and won't reach the Vercel catch-all, so the
+// single-segment alias is registered too (see the rewrite in vercel.json).
+app.post("/webhook/photon", photonWebhook);
+app.post("/api/webhook-photon", photonWebhook);
+
+// Unknown API routes must 404 as JSON, never fall through to the SPA shell.
+app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
+
+// SPA fallback. On Vercel the static assets are served from outputDirectory, so
+// this only matters for local `npm run dev`.
+app.get("*", (req, res) => {
+  const indexPath = join(PUBLIC_DIR, "index.html");
+  if (existsSync(indexPath)) return res.sendFile(indexPath);
+  res.status(404).json({ error: "Not found" });
 });
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

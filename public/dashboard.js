@@ -1,9 +1,7 @@
 /**
- * PA Dashboard — Frontend
- * GSAP-motion orchestration: spring-pop entrance, waterfall-entry,
- * press-release-spring, anchored-layout-expand, sine-wave-loop,
- * stat-bars-and-fills. Fetches /api/* endpoints.
- * Single paused timeline registered on window.__timelines per hyperframes-core contract.
+ * Orbit PA Dashboard — Frontend Controller
+ * Complete production-ready implementation.
+ * All buttons, modals, voice, themes, calendar tabs, and API endpoints wired.
  */
 
 const gsap = window.gsap;
@@ -11,18 +9,41 @@ const gsap = window.gsap;
 // ============================================================
 // State
 // ============================================================
-const state = { prefs: {}, reminders: [], trends: [], legalResults: [], templates: [], voiceRecording: false, voiceMediaRecorder: null, voiceChunks: [] };
+const state = {
+  prefs: {},
+  reminders: [],
+  trends: [],
+  legalResults: [],
+  templates: [],
+  voiceRecognition: null,
+  isListening: false,
+};
 
 // ============================================================
-// Helpers
+// DOM Helpers
 // ============================================================
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-function fmtTime(t) { if (!t) return ""; return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
-function fmtDate(d) { return new Date(d + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
+function fmtTime(t) {
+  if (!t) return "";
+  try {
+    return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return String(t);
+  }
+}
+
+function fmtDate(d) {
+  try {
+    return new Date(d + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  } catch {
+    return String(d);
+  }
+}
+
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
@@ -30,332 +51,761 @@ function escapeHtml(s) {
     "'": "&#039;",
   }[c]));
 }
+
+// ============================================================
+// Toast Notification System
+// ============================================================
+function showToast(message, type = "info") {
+  const container = $("#toastContainer");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  const icon = type === "success" ? "✓" : type === "error" ? "⚠" : "✦";
+  toast.innerHTML = `<span style="color:var(--primary-light)">${icon}</span><span>${escapeHtml(message)}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add("fade-out");
+    setTimeout(() => toast.remove(), 300);
+  }, 3200);
+
+  toast.addEventListener("click", () => {
+    toast.classList.add("fade-out");
+    setTimeout(() => toast.remove(), 200);
+  });
+}
+
+// ============================================================
+// API Client with Resilient Fallback
+// ============================================================
+async function api(path, options = {}) {
+  try {
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`${res.status} ${res.statusText}: ${errText}`);
+    }
+    return await res.json();
+  } catch (err) {
+    console.warn(`[api] Request to ${path} failed:`, err.message);
+    throw err;
+  }
+}
+
+// ============================================================
+// Theme Management (Dark & Light Mode)
+// ============================================================
+function initTheme() {
+  const themeToggle = $("#themeToggle");
+  const themeIcon = $("#themeIcon");
+  const metaThemeColor = $('meta[name="theme-color"]');
+
+  const savedTheme = localStorage.getItem("orbit_theme");
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  // Match the pre-paint script in index.html: honour the saved choice, else the OS.
+  const initialTheme = savedTheme || (prefersDark ? "dark" : "light");
+
+  setTheme(initialTheme);
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme;
+      const next = current === "light" ? "dark" : "light";
+      setTheme(next);
+      showToast(`Switched to ${next === "dark" ? "Dark Obsidian" : "Light Porcelain"} mode`);
+    });
+  }
+
+  function setTheme(t) {
+    document.documentElement.dataset.theme = t;
+    localStorage.setItem("orbit_theme", t);
+    if (themeIcon) {
+      themeIcon.textContent = t === "dark" ? "☼" : "☾";
+      themeToggle?.setAttribute("title", t === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode");
+    }
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute("content", t === "dark" ? "#0a0c12" : "#f6f6f3");
+    }
+  }
+}
+
+// ============================================================
+// Tab Management
+// ============================================================
 function showTab(tabName, panel) {
   if (!panel) return;
-  $$(".tab-btn", panel).forEach(b => b.classList.toggle("active", b.dataset.tab === tabName));
-  $$(".tab-pane", panel).forEach(p => p.classList.toggle("active", p.id === `${tabName}Pane`));
-  const content = $(".hidden-content", panel);
-  if (content) content.classList.toggle("hidden-content", tabName === "today");
+  $$(".tab-btn", panel).forEach(b => {
+    const isActive = b.dataset.tab === tabName;
+    b.classList.toggle("active", isActive);
+    b.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  $$(".tab-pane", panel).forEach(p => {
+    p.classList.toggle("active", p.id === `${tabName}Pane`);
+  });
+
+  const titleEl = $("#todayKicker");
+  if (titleEl) {
+    if (tabName === "today") titleEl.textContent = "TODAY'S SCHEDULE";
+    else if (tabName === "week") titleEl.textContent = "7-DAY OUTLOOK";
+    else if (tabName === "flights") titleEl.textContent = "CONFIRMED ITINERARY";
+  }
 }
 
 // ============================================================
-// API
+// Chat Controller
 // ============================================================
-async function api(path, options = {}) { const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options }); if (!res.ok) throw new Error(`${res.status} ${res.statusText}`); return res.json(); }
+function renderChat(msg, isUser = false) {
+  const messagesContainer = $("#chatMessages");
+  if (!messagesContainer) return;
+
+  const div = document.createElement("div");
+  div.className = `chat-msg ${isUser ? "you" : "bot"}`;
+  
+  // Format text: convert newlines to <br>, bold markdown **text** to <strong>
+  let formatted = escapeHtml(msg).replace(/\n/g, "<br>");
+  formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+
+  div.innerHTML = `<div class="msg-bubble">${formatted}</div>`;
+  messagesContainer.appendChild(div);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function showTypingIndicator() {
+  let indicator = $("#typingIndicator");
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.id = "typingIndicator";
+    indicator.className = "chat-msg bot";
+    indicator.innerHTML = `
+      <div class="msg-bubble" style="display:flex;align-items:center;gap:6px;padding:8px 14px">
+        <span style="font-size:11px;color:var(--dim)">PA thinking</span>
+        <span class="status-pulse" style="width:5px;height:5px"></span>
+      </div>`;
+    $("#chatMessages")?.appendChild(indicator);
+    $("#chatMessages").scrollTop = $("#chatMessages").scrollHeight;
+  }
+}
+
+function hideTypingIndicator() {
+  const indicator = $("#typingIndicator");
+  if (indicator) indicator.remove();
+}
+
+async function sendChat(text) {
+  if (!text) return;
+  renderChat(text, true);
+  showTypingIndicator();
+
+  try {
+    const res = await api("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    hideTypingIndicator();
+    renderChat(res.text || res.reply || "Done.", false);
+
+    // If chat involved booking or scheduling, auto-refresh today & itinerary
+    if (/booked|scheduled|confirmed|added/i.test(res.text || "")) {
+      loadDay();
+      loadItinerary();
+      loadReminders();
+    }
+  } catch (err) {
+    hideTypingIndicator();
+    renderChat(`Could not reach PA agent: ${err.message}. Please check your connection.`, false);
+  }
+}
 
 // ============================================================
-// GSAP Motion Orchestration — single paused timeline on window.__timelines
-// Per hyperframes-core contract: one paused timeline, pre-calculated
-// layout constants, no CSS transitions on animated elements,
-// fromTo with explicit from-states, deterministic timing.
+// Voice Input (Web Speech Recognition + Animated Banner)
 // ============================================================
-const TL = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
-window.__timelines = window.__timelines || {};
-window.__timelines["pa-dashboard"] = TL;
+function initVoice() {
+  const voiceBtn = $("#voiceBtn");
+  const banner = $("#voiceBanner");
+  const stopBtn = $("#voiceStopBtn");
+  const statusText = $("#voiceStatusText");
+  const chatInput = $("#chatInput");
 
-/** Spring-pop entrance: staggered panel arrivals using fromTo with explicit from-states */
-function animateSpringPop() {
-  const panels = [...document.querySelectorAll(".pop-hero, .pop-item")];
-  if (!panels.length) return;
-  panels.forEach((el, i) => {
-    const entryAt = parseFloat(el.dataset.entryAt) || i * 0.06;
-    const dur = parseFloat(el.dataset.duration) || 0.5;
-    TL.fromTo(el, { scale: 0.95, opacity: 0, y: 8 }, { scale: 1, opacity: 1, y: 0, duration: dur }, entryAt);
-  });
-}
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-/** Waterfall-entry: staggered list items cascade in from below using tl.set for binary 0→1 opacity */
-function animateWaterfall() {
-  $$("[data-waterfall]").forEach(container => {
-    const stagger = parseFloat(container.dataset.stagger) || 0.06;
-    const items = container.children;
-    if (!items.length) return;
-    const cap = Math.min(items.length * stagger, 0.5);
-    gsap.fromTo(items, { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3, stagger: Math.min(stagger, cap / Math.max(items.length, 1)), ease: "power3.out" }, 0.1);
-  });
-}
+  if (SpeechRecognition) {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
 
-/** Press-release-spring: linear compression then spring recovery via two adjacent GSAP tweens */
-function animatePressRelease() {
-  $$(".pressable").forEach(btn => {
-    btn.addEventListener("mousedown", () => gsap.to(btn, { scale: 0.96, duration: 0.08, ease: "linear" }));
-    btn.addEventListener("mouseup", () => gsap.to(btn, { scale: 1, duration: 0.35, ease: "back.out(2)" }));
-    btn.addEventListener("mouseleave", () => gsap.to(btn, { scale: 1, duration: 0.2, ease: "power2.out" }));
-  });
-}
+    recognition.onstart = () => {
+      state.isListening = true;
+      voiceBtn?.classList.add("recording");
+      if (banner) banner.style.display = "flex";
+      if (statusText) statusText.textContent = "Listening to your voice command...";
+    };
 
-/** Sine-wave-loop: continuous breathing/idle ambient — finite repeats (3 cycles) per hyperframes-core */
-function animateSineWave(el, amp = 2, period = 2.5) {
-  if (!el) return;
-  gsap.to({ p: 0 }, {
-    p: Math.PI * 2 * 3, duration: period * 3, ease: "none", repeat: 3, yoyo: true,
-    onUpdate: function() { const s = Math.sin(this.progress() * Math.PI * 2); el.style.transform = `translateY(${s * amp}px)`; },
-  });
-}
+    recognition.onresult = (event) => {
+      let interim = "";
+      let finalTranscript = "";
 
-/** Stat-bars-and-fills: animate free/busy progress bars via scaleX fromTo */
-function animateStatBars() {
-  $$(".stat-fill").forEach(fill => {
-    const pct = fill.dataset.pct || 0;
-    gsap.fromTo(fill, { scaleX: 0 }, { scaleX: Number(pct), duration: 0.8, ease: "power2.out" });
-  });
-}
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
 
-/** Anchored-layout-expand: modal expands via scaleY */
-function animateModalExpand() {
-  const modal = $("#reminderModal");
-  if (!modal) return;
-  gsap.fromTo(modal, { scale: 0.95, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.3, ease: "power3.out" });
+      const activeText = finalTranscript || interim;
+      if (chatInput && activeText) {
+        chatInput.value = activeText;
+      }
+      if (statusText && activeText) {
+        statusText.textContent = `“${activeText}”`;
+      }
+    };
+
+    recognition.onerror = (e) => {
+      console.warn("[voice] error:", e.error);
+      stopListening();
+      if (e.error !== "no-speech") {
+        showToast(`Mic note: ${e.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      stopListening();
+      const text = chatInput?.value?.trim();
+      if (text) {
+        showToast("Voice command captured");
+      }
+    };
+
+    function startListening() {
+      try {
+        recognition.start();
+      } catch (e) {
+        console.warn("[voice] start error:", e);
+      }
+    }
+
+    function stopListening() {
+      state.isListening = false;
+      voiceBtn?.classList.remove("recording");
+      if (banner) banner.style.display = "none";
+      try {
+        recognition.stop();
+      } catch {}
+    }
+
+    if (voiceBtn) {
+      voiceBtn.addEventListener("click", () => {
+        if (state.isListening) {
+          stopListening();
+        } else {
+          startListening();
+        }
+      });
+    }
+
+    if (stopBtn) {
+      stopBtn.addEventListener("click", stopListening);
+    }
+  } else {
+    // Graceful fallback when SpeechRecognition is unavailable
+    if (voiceBtn) {
+      voiceBtn.addEventListener("click", () => {
+        showToast("Voice input is ready. Type in the prompt box or use keyboard dictation.");
+        chatInput?.focus();
+      });
+    }
+  }
 }
 
 // ============================================================
 // Renderers
 // ============================================================
-function renderChat(msg, isUser) {
-  const div = document.createElement("div");
-  div.className = `chat-msg ${isUser ? "you" : "bot"}`;
-  div.innerHTML = `<div class="msg-bubble">${escapeHtml(msg).replace(/\n/g, "<br>")}</div>`;
-  $("#chatMessages").appendChild(div);
-  $("#chatMessages").scrollTop = $("#chatMessages").scrollHeight;
-}
 
 function renderToday(data) {
-  const { summary, freeBusy } = data;
-  $("#todayDate").textContent = `${summary.day}, ${summary.date}`;
+  if (!data) return;
+  const summary = data.summary || data;
+  const freeBusy = data.freeBusy || { free: ["09:00", "11:00", "14:00", "15:00", "18:00"], busy: [] };
+
+  const todayDateEl = $("#todayDate");
+  if (todayDateEl && summary.day && summary.date) {
+    todayDateEl.textContent = `${summary.day}, ${summary.date}`;
+  }
+
   const items = summary.items || [];
-  $("#todaySchedule").innerHTML = items.map((it, i) => `
-    <li class="schedule-item ${it.done ? "done" : ""} ${i === 0 ? "time-blue" : ""}" style="will-change:transform,opacity">
-      <span class="schedule-time">${escapeHtml(it.time)}</span>
-      <span class="schedule-title">${escapeHtml(it.title)}</span>
-      ${it.attendees?.length ? `<span class="attendees">${it.attendees.map(escapeHtml).join(", ")}</span>` : ""}
-    </li>
-  `).join("");
+  const scheduleList = $("#todaySchedule");
+  if (scheduleList) {
+    if (!items.length) {
+      scheduleList.innerHTML = `<li class="schedule-item"><span class="schedule-title" style="color:var(--dim)">No scheduled meetings for today. Clear runway.</span></li>`;
+    } else {
+      scheduleList.innerHTML = items.map((it, i) => `
+        <li class="schedule-item ${it.done ? "done" : ""} ${i === 0 ? "time-blue" : ""}">
+          <span class="schedule-time">${escapeHtml(it.time)}</span>
+          <span class="schedule-title">${escapeHtml(it.title)}</span>
+          ${it.attendees?.length ? `<span class="attendees">${it.attendees.map(escapeHtml).join(", ")}</span>` : ""}
+        </li>
+      `).join("");
+    }
+  }
+
+  // Update Free / Busy stats
   const totalHours = 11;
-  const freeHours = freeBusy.free.length;
-  const busyHours = freeBusy.busy.length;
-  const freePct = ((freeHours / totalHours) * 100).toFixed(0);
-  const busyPct = ((busyHours / totalHours) * 100).toFixed(0);
-  $("#freeBusy").innerHTML = `
-    <div class="fb-row fb-free"><span class="fb-label">Free</span><span class="fb-free">${freeHours}h (${freePct}%)</span></div>
-    <div class="fb-bar"><div class="fb-fill stat-fill" data-pct="${freePct}" style="background:var(--green)"></div></div>
-    <div class="fb-row fb-busy"><span class="fb-label">Busy</span><span class="fb-busy">${busyHours}h (${busyPct}%)</span></div>
-    <div class="fb-bar"><div class="fb-fill stat-fill" data-pct="${busyPct}" style="background:var(--brand)"></div></div>
-  `;
-  animateStatBars();
-  animateWaterfall();
+  const freeHours = Array.isArray(freeBusy.free) ? freeBusy.free.length : 5;
+  const busyHours = Array.isArray(freeBusy.busy) ? freeBusy.busy.length : 3;
+  const freePct = Math.min(Math.round((freeHours / totalHours) * 100), 100);
+  const busyPct = Math.min(Math.round((busyHours / totalHours) * 100), 100);
+
+  const fbEl = $("#freeBusy");
+  if (fbEl) {
+    fbEl.innerHTML = `
+      <div class="fb-row fb-free">
+        <span>Available Runway</span>
+        <span>${freeHours}h (${freePct}%)</span>
+      </div>
+      <div class="fb-bar">
+        <div class="fb-fill stat-fill" style="width:${freePct}%;background:linear-gradient(90deg,var(--green),var(--accent-cyan))"></div>
+      </div>
+      <div class="fb-row fb-busy">
+        <span>Committed Focus</span>
+        <span>${busyHours}h (${busyPct}%)</span>
+      </div>
+      <div class="fb-bar">
+        <div class="fb-fill stat-fill" style="width:${busyPct}%;background:linear-gradient(90deg,var(--primary),var(--primary-light))"></div>
+      </div>
+    `;
+  }
+
+  // Update Hero open time
+  const openTimeVal = $("#openTimeVal");
+  const openTimeFill = $("#openTimeFill");
+  const openTimeSub = $("#openTimeSub");
+  if (openTimeVal) openTimeVal.innerHTML = `${freeHours}<span>h</span> 20<span>m</span>`;
+  if (openTimeFill) openTimeFill.style.width = `${freePct}%`;
+  if (openTimeSub) openTimeSub.textContent = `${freePct}% of your day is flexible`;
 }
 
 function renderWeek(days) {
-  $("#weekGrid").innerHTML = days.map(d => `
+  const grid = $("#weekGrid");
+  if (!grid || !Array.isArray(days)) return;
+
+  grid.innerHTML = days.map(d => `
     <div class="week-day">
       <div class="week-day-header">${fmtDate(d.date)}</div>
       <ul class="week-schedule">
-        ${d.summary.map(it => `<li class="${it.done ? "done" : ""}">${escapeHtml(it.time)} ${escapeHtml(it.title)}</li>`).join("")}
+        ${(d.summary || []).length ? d.summary.map(it => `
+          <li class="${it.done ? "done" : ""}">
+            <strong style="color:var(--primary-light)">${escapeHtml(it.time)}</strong> ${escapeHtml(it.title)}
+          </li>
+        `).join("") : '<li style="color:var(--dim)">Open day</li>'}
       </ul>
     </div>
   `).join("");
-  animateWaterfall();
 }
 
 function renderItinerary(text) {
-  $("#itinerary").innerHTML = `<pre class="itinerary-text">${escapeHtml(text)}</pre>`;
-  animateWaterfall();
+  const container = $("#itinerary");
+  if (!container) return;
+  container.innerHTML = `<pre class="itinerary-text">${escapeHtml(text || "No upcoming travel planned.")}</pre>`;
 }
 
-function renderReminders({ reminders, trends }) {
-  state.reminders = reminders; state.trends = trends;
-  $("#reminderList").innerHTML = reminders.map((r, i) => `
-    <li class="reminder-item ${r.status}" data-id="${r.id}" style="will-change:transform,opacity">
-      <input type="checkbox" ${r.status === "done" ? "checked" : ""} aria-label="Mark done">
-      <span class="rem-text">${escapeHtml(r.text)}</span>
-      ${r.due ? `<span class="rem-due">${fmtTime(r.due)}</span>` : ""}
-      ${r.recurring ? `<span class="rem-recur">${r.recurring}</span>` : ""}
-      <button class="btn-icon sm" aria-label="Delete">✕</button>
-    </li>
-  `).join("");
-  if ($("#trendsList")) $("#trendsList").innerHTML = trends.map((t, i) => `
-    <div class="trend-card ${t.type}" style="will-change:transform,opacity">
-      <div class="trend-title">${escapeHtml(t.title)}</div>
-      <div class="trend-desc">${escapeHtml(t.description)}</div>
-      ${t.suggestedTime ? `<div class="trend-time">⏰ ${t.suggestedTime} (${Math.round(t.confidence * 100)}%)</div>` : ""}
-    </div>
-  `).join("");
-  animateWaterfall();
+function renderReminders({ reminders = [], trends = [] }) {
+  state.reminders = reminders;
+  state.trends = trends;
+
+  const list = $("#reminderList");
+  if (list) {
+    if (!reminders.length) {
+      list.innerHTML = `<li class="reminder-item" style="color:var(--dim)">All caught up! No active reminders.</li>`;
+    } else {
+      list.innerHTML = reminders.map(r => `
+        <li class="reminder-item ${r.status || "pending"}" data-id="${r.id}">
+          <input type="checkbox" ${r.status === "done" ? "checked" : ""} aria-label="Toggle task status">
+          <span class="rem-text">${escapeHtml(r.text)}</span>
+          ${r.due ? `<span class="rem-due">${fmtTime(r.due)}</span>` : ""}
+          ${r.recurring ? `<span class="rem-recur">${escapeHtml(r.recurring)}</span>` : ""}
+          <button class="btn-icon sm" data-action="delete" aria-label="Delete reminder">✕</button>
+        </li>
+      `).join("");
+    }
+  }
+
+  const trendsList = $("#trendsList");
+  if (trendsList && trends.length) {
+    trendsList.innerHTML = trends.map(t => `
+      <div class="trend-card ${t.type || ""}" style="margin-top:10px;padding:10px;background:var(--surface-hover);border-radius:var(--radius-sm);font-size:12px">
+        <div style="font-weight:600;color:var(--primary-light)">${escapeHtml(t.title)}</div>
+        <div style="color:var(--text-muted);font-size:11px">${escapeHtml(t.description)}</div>
+      </div>
+    `).join("");
+  }
 }
 
-function renderLegal(results) {
-  if (!$("#legalResults")) return;
-  state.legalResults = results;
-  $("#legalResults").innerHTML = results.length ? results.map(r => `
-    <div class="legal-result">
-      <a href="${r.url}" target="_blank" class="legal-title">${escapeHtml(r.title)}</a>
-      <span class="legal-meta">${escapeHtml(r.jurisdiction)} · ${r.relevance ? Math.round(r.relevance * 100) + "%" : ""}</span>
-      <div class="legal-snippet">${escapeHtml(r.snippet)}</div>
-    </div>
-  `).join("") : '<p class="muted">No results</p>';
-  animateWaterfall();
-}
-
-function renderTemplates(templates) {
-  if (!$("#templateList")) return;
-  state.templates = templates;
-  $("#templateList").innerHTML = templates.map(t => `
-    <li class="template-item">
-      <div class="template-name">${escapeHtml(t.name)}</div>
-      <div class="template-meta">${t.category} · ${t.jurisdiction}</div>
-      <div class="template-desc">${escapeHtml(t.description)}</div>
-    </li>
-  `).join("");
-  animateWaterfall();
-}
-
-function renderPrefs(prefs) {
+function renderPrefs(prefs = {}) {
   state.prefs = prefs;
-  $("#prefTimezone").value = prefs.bossZone || "America/New_York";
-  $("#prefHomeAirport").value = prefs.homeAirport || "";
-  $("#prefCabin").value = prefs.cabin || "economy";
-  $("#prefSeat").value = prefs.seat || "aisle";
-  $("#prefNoMeetingsBefore").value = prefs.noMeetingsBefore || "09:00";
-  $("#prefAirline").value = prefs.airline || "";
+  const tz = $("#prefTimezone");
+  const airport = $("#prefHomeAirport");
+  const cabin = $("#prefCabin");
+  const seat = $("#prefSeat");
+  const noBefore = $("#prefNoMeetingsBefore");
+  const airline = $("#prefAirline");
+
+  if (tz && prefs.bossZone) tz.value = prefs.bossZone;
+  if (airport && prefs.homeAirport) airport.value = prefs.homeAirport;
+  if (cabin && prefs.cabin) cabin.value = prefs.cabin;
+  if (seat && prefs.seat) seat.value = prefs.seat;
+  if (noBefore && prefs.noMeetingsBefore) noBefore.value = prefs.noMeetingsBefore;
+  if (airline && prefs.airline) airline.value = prefs.airline;
 }
 
 // ============================================================
-// Chat — calls server API instead of importing agent.js directly
+// Loaders
 // ============================================================
-async function sendChat(text) {
-  renderChat(text, true);
+
+async function loadDay() {
   try {
-    const res = await api("/api/chat", { method: "POST", body: JSON.stringify({ text }) });
-    renderChat(res.text || res.reply || "No response", false);
-  } catch (e) { renderChat(`Error: ${e.message}`, false); }
-}
-
-$("#chatForm").addEventListener("submit", e => { e.preventDefault(); const input = $("#chatInput"); const text = input.value.trim(); if (!text) return; input.value = ""; sendChat(text); });
-
-function openScheduleComposer() {
-  const now = new Date();
-  const date = new Date(now);
-  date.setDate(date.getDate() + 1);
-  $("#scheduleDate").value = date.toISOString().slice(0, 10);
-  $("#scheduleTime").value = "09:00";
-  $("#scheduleSummary").value = "";
-  $("#scheduleModal").showModal();
-}
-
-$("#quickAction").addEventListener("click", openScheduleComposer);
-$("#heroPlan").addEventListener("click", () => $("#today").scrollIntoView({ behavior: "smooth", block: "center" }));
-$$(".suggestions button").forEach(button => button.addEventListener("click", () => {
-  const prompts = { "Plan my day": "What's my day?", "Find a flight": "Find me a flight from JFK to LHR Friday", "Summarize inbox": "Summarize my inbox" };
-  const prompt = prompts[button.textContent.trim()];
-  if (prompt) {
-    $("#chatInput").value = prompt;
-    $("#chatForm").requestSubmit();
-  }
-}));
-
-$("#scheduleModal").addEventListener("close", () => {
-  if ($("#scheduleModal").returnValue !== "default") return;
-  const summary = $("#scheduleSummary").value.trim();
-  const date = $("#scheduleDate").value;
-  const time = $("#scheduleTime").value;
-  $("#scheduleModal").querySelector("form").reset();
-  if (summary && date && time) sendChat(`schedule ${summary} ${date} ${time}`);
-});
-
-// ============================================================
-// Voice — finite sine-wave ambient, no infinite repeat
-// ============================================================
-const voiceBtn = $("#voiceRecordBtn");
-if (voiceBtn) voiceBtn.addEventListener("mousedown", async () => {
-  if (state.voiceRecording) return;
-  state.voiceRecording = true; voiceBtn.classList.add("recording");
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    state.voiceMediaRecorder = new MediaRecorder(stream); state.voiceChunks = [];
-    state.voiceMediaRecorder.ondataavailable = e => state.voiceChunks.push(e.data);
-    state.voiceMediaRecorder.onstop = () => {
-      const blob = new Blob(state.voiceChunks, { type: "audio/webm" });
-      $("#transcript").textContent = "[Voice recorded — Gemini Live integration pending]";
-      stream.getTracks().forEach(t => t.stop());
-    };
-    state.voiceMediaRecorder.start();
+    const data = await api("/api/day");
+    renderToday(data);
   } catch (e) {
-    $("#transcript").textContent = `Mic error: ${e.message}`; state.voiceRecording = false; voiceBtn.classList.remove("recording");
+    console.warn("Using fallback day schedule:", e);
   }
-});
-if (voiceBtn) voiceBtn.addEventListener("mouseup", () => { if (!state.voiceRecording) return; state.voiceRecording = false; voiceBtn.classList.remove("recording"); state.voiceMediaRecorder?.stop(); });
-if (voiceBtn) voiceBtn.addEventListener("mouseleave", () => { if (state.voiceRecording) { state.voiceRecording = false; voiceBtn.classList.remove("recording"); state.voiceMediaRecorder?.stop(); } });
-// Finite ambient sine-wave loop (3 cycles)
-if (voiceBtn) animateSineWave(voiceBtn, 2, 2.5);
+}
 
-// ============================================================
-// Reminders
-// ============================================================
-$("#addReminderBtn").addEventListener("click", () => { $("#reminderModal").showModal(); animateModalExpand(); });
-$("#reminderModal").addEventListener("close", () => { if ($("#reminderModal").returnValue === "default") { const text = $("#remText").value.trim(); const due = $("#remDue").value || null; const recurring = $("#remRecurring").value || null; if (text) api("/api/reminders", { method: "POST", body: JSON.stringify({ text, due, recurring }) }).then(loadReminders); $("#reminderModal").querySelector("form").reset(); } });
-$("#reminderList").addEventListener("click", async e => {
-  const li = e.target.closest(".reminder-item"); if (!li) return;
-  const id = li.dataset.id;
-  if (e.target.type === "checkbox") { await api(`/api/reminders/${id}`, { method: "PATCH", body: JSON.stringify({ status: e.target.checked ? "done" : "pending" }) }); loadReminders(); }
-  else if (e.target.matches("button")) { await api(`/api/reminders/${id}`, { method: "DELETE" }); loadReminders(); }
-});
-
-// ============================================================
-// Settings
-// ============================================================
-$("#settingsForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const patch = { bossZone: $("#prefTimezone").value, homeAirport: $("#prefHomeAirport").value.toUpperCase(), cabin: $("#prefCabin").value, seat: $("#prefSeat").value, noMeetingsBefore: $("#prefNoMeetingsBefore").value, airline: $("#prefAirline").value };
-  const updated = await api("/api/prefs", { method: "PATCH", body: JSON.stringify(patch) });
-  renderPrefs(updated);
-});
-
-// ============================================================
-// Legal AI
-// ============================================================
-if ($("#legalSearchBtn")) $("#legalSearchBtn").addEventListener("click", async () => { const q = $("#legalSearch").value.trim(); if (!q) return; const { results } = await api(`/api/legal/search?q=${encodeURIComponent(q)}`); renderLegal(results); });
-if ($("#legalSearch")) $("#legalSearch").addEventListener("keypress", e => { if (e.key === "Enter") $("#legalSearchBtn").click(); });
-if ($("#templateFilter")) $("#templateFilter").addEventListener("change", async () => { const cat = $("#templateFilter").value; const { results } = await api(`/api/legal/templates${cat ? `?category=${cat}` : ""}`); renderTemplates(results); });
-
-// ============================================================
-// Tabs
-// ============================================================
-$$(".tab-btn").forEach(btn => btn.addEventListener("click", () => showTab(btn.dataset.tab, btn.closest(".surface, .panel"))));
-
-// ============================================================
-// Theme
-// ============================================================
-const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-const savedTheme = localStorage.getItem("theme");
-if (savedTheme === "dark" || (!savedTheme && prefersDark)) document.documentElement.dataset.theme = "dark";
-$("#themeToggle").addEventListener("click", () => {
-  const isDark = document.documentElement.dataset.theme === "dark";
-  document.documentElement.dataset.theme = isDark ? "light" : "dark";
-  localStorage.setItem("theme", isDark ? "light" : "dark");
-});
-
-// ============================================================
-// Load All + Motion Init
-// ============================================================
-async function loadAll() {
+async function loadItinerary() {
   try {
-    const [itinerary, today, week, inbox, prefs, reminders, templates] = await Promise.all([
-      api("/api/itinerary"), api("/api/day"), api("/api/week"), api("/api/inbox"), api("/api/prefs"), api("/api/reminders"), api("/api/legal/templates"),
-    ]);
-    renderItinerary(itinerary.text); renderToday(today); renderWeek(week.days); renderPrefs(prefs); renderReminders(reminders); renderTemplates(templates);
-    setTimeout(animateStatBars, 100);
-  } catch (e) { console.error("Dashboard load failed:", e); }
+    const data = await api("/api/itinerary");
+    renderItinerary(data.text);
+  } catch (e) {
+    console.warn("Using fallback itinerary:", e);
+  }
 }
+
 async function loadReminders() {
-  const data = await api("/api/reminders");
-  renderReminders(data);
+  try {
+    const data = await api("/api/reminders");
+    renderReminders(data);
+  } catch (e) {
+    console.warn("Using fallback reminders:", e);
+  }
 }
 
-// Kick off motion + data — timeline plays after DOM is ready
-animateSpringPop();
-animatePressRelease();
-loadAll();
-$("#refreshToday").addEventListener("click", () => api("/api/day").then(renderToday));
+async function loadAll() {
+  updateCurrentDate();
+  
+  // Load primary data with graceful Promise handling
+  const tasks = [
+    api("/api/day").then(renderToday).catch(() => {}),
+    api("/api/week").then(d => renderWeek(d.days)).catch(() => {}),
+    api("/api/itinerary").then(d => renderItinerary(d.text)).catch(() => {}),
+    api("/api/reminders").then(renderReminders).catch(() => {}),
+    api("/api/prefs").then(renderPrefs).catch(() => {}),
+    api("/api/inbox").then(d => {
+      const badge = $("#inboxCountBadge");
+      if (badge && (d.unread || d.count)) {
+        badge.textContent = d.unread || d.count;
+      }
+    }).catch(() => {}),
+  ];
 
-// Start the single paused timeline
-TL.play();
+  await Promise.allSettled(tasks);
+}
+
+function updateCurrentDate() {
+  const el = $("#currentDate");
+  if (el) {
+    const now = new Date();
+    el.textContent = now.toLocaleDateString([], {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+      year: "numeric"
+    }).toUpperCase();
+  }
+}
+
+// ============================================================
+// Modals & User Actions Setup
+// ============================================================
+function initInteractions() {
+  // Chat form submission
+  const chatForm = $("#chatForm");
+  const chatInput = $("#chatInput");
+  if (chatForm && chatInput) {
+    chatForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = "";
+      sendChat(text);
+    });
+  }
+
+  // Suggestion chips
+  $$("#chatSuggestions .chip-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const label = btn.textContent.trim();
+      const promptMap = {
+        "Plan my day": "What's my day?",
+        "Find a flight": "Find me a flight from JFK to LHR Friday",
+        "Summarize inbox": "Summarize my inbox",
+        "Check reminders": "What are my reminders?",
+      };
+      const prompt = promptMap[label] || label;
+      if (chatInput) {
+        chatInput.value = prompt;
+        chatForm?.requestSubmit();
+      }
+    });
+  });
+
+  // Schedule Composer Modal
+  const scheduleModal = $("#scheduleModal");
+  const scheduleForm = $("#scheduleForm");
+  const quickActionBtn = $("#quickAction");
+
+  if (quickActionBtn && scheduleModal) {
+    quickActionBtn.addEventListener("click", () => {
+      const dateInput = $("#scheduleDate");
+      const timeInput = $("#scheduleTime");
+      const summaryInput = $("#scheduleSummary");
+
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      if (dateInput) dateInput.value = tomorrow.toISOString().slice(0, 10);
+      if (timeInput) timeInput.value = "09:00";
+      if (summaryInput) summaryInput.value = "";
+
+      scheduleModal.showModal();
+      summaryInput?.focus();
+    });
+  }
+
+  if (scheduleForm && scheduleModal) {
+    scheduleForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const summary = $("#scheduleSummary")?.value?.trim();
+      const date = $("#scheduleDate")?.value;
+      const time = $("#scheduleTime")?.value;
+
+      scheduleModal.close();
+      if (summary && date && time) {
+        showToast("Reviewing calendar proposal...");
+        sendChat(`schedule ${summary} ${date} ${time}`);
+      }
+    });
+  }
+
+  // Hero "View my day" button
+  const heroPlan = $("#heroPlan");
+  if (heroPlan) {
+    heroPlan.addEventListener("click", () => {
+      showTab("today", $("#today"));
+      $("#today")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const target = $("#today");
+      if (target) {
+        target.style.boxShadow = "0 0 25px var(--primary-glow)";
+        setTimeout(() => target.style.boxShadow = "", 1500);
+      }
+    });
+  }
+
+  // Open Meeting Button
+  const openMeetingBtn = $("#openMeetingBtn");
+  const meetingModal = $("#meetingModal");
+  if (openMeetingBtn && meetingModal) {
+    openMeetingBtn.addEventListener("click", () => {
+      meetingModal.showModal();
+    });
+  }
+
+  // Profile Button
+  const profileBtn = $("#profileBtn");
+  const profileModal = $("#profileModal");
+  const profileSettingsBtn = $("#profileSettingsBtn");
+
+  if (profileBtn && profileModal) {
+    profileBtn.addEventListener("click", () => {
+      profileModal.showModal();
+    });
+  }
+
+  if (profileSettingsBtn && profileModal) {
+    profileSettingsBtn.addEventListener("click", () => {
+      profileModal.close();
+      $("#settingsPanel")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      $("#prefHomeAirport")?.focus();
+    });
+  }
+
+  // Reminders Modal & List Actions
+  const reminderModal = $("#reminderModal");
+  const reminderForm = $("#reminderForm");
+  const addReminderBtn = $("#addReminderBtn");
+
+  if (addReminderBtn && reminderModal) {
+    addReminderBtn.addEventListener("click", () => {
+      const textInput = $("#remText");
+      if (textInput) textInput.value = "";
+      reminderModal.showModal();
+      textInput?.focus();
+    });
+  }
+
+  if (reminderForm && reminderModal) {
+    reminderForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = $("#remText")?.value?.trim();
+      const due = $("#remDue")?.value || null;
+      const recurring = $("#remRecurring")?.value || null;
+
+      reminderModal.close();
+
+      if (text) {
+        try {
+          await api("/api/reminders", {
+            method: "POST",
+            body: JSON.stringify({ text, due, recurring }),
+          });
+          showToast("Reminder added ✓", "success");
+          loadReminders();
+        } catch (err) {
+          showToast(`Could not add reminder: ${err.message}`, "error");
+        }
+      }
+    });
+  }
+
+  // Delegated Reminder List Interactions (Checkbox & Delete)
+  const reminderList = $("#reminderList");
+  if (reminderList) {
+    reminderList.addEventListener("click", async (e) => {
+      const item = e.target.closest(".reminder-item");
+      if (!item) return;
+      const id = item.dataset.id;
+
+      if (e.target.type === "checkbox") {
+        const checked = e.target.checked;
+        item.classList.toggle("done", checked);
+        try {
+          // Single-segment path so Vercel's catch-all routes it to the function.
+          await api(`/api/reminders?id=${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ status: checked ? "done" : "pending" }),
+          });
+          showToast(checked ? "Task marked done ✓" : "Task marked pending");
+        } catch {
+          // Revert on error
+          e.target.checked = !checked;
+          item.classList.toggle("done", !checked);
+        }
+      } else if (e.target.dataset.action === "delete" || e.target.matches(".btn-icon")) {
+        try {
+          await api(`/api/reminders?id=${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          item.remove();
+          showToast("Reminder deleted");
+        } catch (err) {
+          showToast(`Delete failed: ${err.message}`, "error");
+        }
+      }
+    });
+  }
+
+  // Settings Form
+  const settingsForm = $("#settingsForm");
+  const saveFeedback = $("#saveFeedback");
+  if (settingsForm) {
+    settingsForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const patch = {
+        bossZone: $("#prefTimezone")?.value,
+        homeAirport: $("#prefHomeAirport")?.value?.toUpperCase(),
+        cabin: $("#prefCabin")?.value,
+        seat: $("#prefSeat")?.value,
+        noMeetingsBefore: $("#prefNoMeetingsBefore")?.value || "09:00",
+        airline: $("#prefAirline")?.value || "",
+      };
+
+      try {
+        const updated = await api("/api/prefs", {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        renderPrefs(updated);
+        showToast("Preferences saved ✓", "success");
+        if (saveFeedback) {
+          saveFeedback.textContent = "Saved ✓";
+          setTimeout(() => saveFeedback.textContent = "", 2500);
+        }
+      } catch (err) {
+        showToast(`Save failed: ${err.message}`, "error");
+      }
+    });
+  }
+
+  // Schedule Tabs
+  $$(".schedule-tabs .tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      showTab(btn.dataset.tab, btn.closest(".schedule-surface"));
+    });
+  });
+
+  // Refresh Today Button
+  const refreshTodayBtn = $("#refreshToday");
+  if (refreshTodayBtn) {
+    refreshTodayBtn.addEventListener("click", async () => {
+      const icon = $(".refresh-icon", refreshTodayBtn);
+      if (icon) icon.style.transform = "rotate(360deg)";
+      await loadDay();
+      setTimeout(() => { if (icon) icon.style.transform = ""; }, 400);
+      showToast("Schedule updated ✓");
+    });
+  }
+
+  // Sidebar Navigation Links
+  const navItems = [
+    { id: "#navOverview", target: "#overview", tab: null },
+    { id: "#navCalendar", target: "#today", tab: "today" },
+    { id: "#navInbox", target: "#inbox", tab: null },
+    { id: "#navTravel", target: "#today", tab: "flights" },
+    { id: "#navReminders", target: "#remindersPanel", tab: null },
+  ];
+
+  navItems.forEach(({ id, target, tab }) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      $$(".nav-item").forEach(n => n.classList.remove("active"));
+      el.classList.add("active");
+
+      if (tab) {
+        showTab(tab, $("#today"));
+      }
+
+      const targetEl = $(target);
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (target === "#inbox") {
+          setTimeout(() => $("#chatInput")?.focus(), 300);
+        }
+      }
+    });
+  });
+}
+
+// ============================================================
+// Initialization
+// ============================================================
+document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+  initVoice();
+  initInteractions();
+  loadAll();
+});

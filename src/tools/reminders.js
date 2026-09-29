@@ -18,14 +18,26 @@ const DEFAULT_REMINDERS = [
   { id: "rem_2", text: "Call Sarah re: M&A timeline", due: null, recurring: null, status: "pending", created: new Date().toISOString() },
 ];
 
+let cache = null;
+
 function load() {
-  try { return existsSync(REMINDER_PATH) ? JSON.parse(readFileSync(REMINDER_PATH, "utf8")) : [...DEFAULT_REMINDERS]; }
-  catch { return [...DEFAULT_REMINDERS]; }
+  if (cache) return cache;
+  try {
+    cache = existsSync(REMINDER_PATH) ? JSON.parse(readFileSync(REMINDER_PATH, "utf8")) : [...DEFAULT_REMINDERS];
+  } catch {
+    cache = [...DEFAULT_REMINDERS];
+  }
+  return cache;
 }
 
 function persist(list) {
-  mkdirSync(DIR, { recursive: true });
-  writeFileSync(REMINDER_PATH, JSON.stringify(list, null, 2), "utf8");
+  cache = list;
+  try {
+    mkdirSync(DIR, { recursive: true });
+    writeFileSync(REMINDER_PATH, JSON.stringify(list, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[reminders] could not persist (read-only storage):", err.message);
+  }
 }
 
 export function getReminders() { return [...load()]; }

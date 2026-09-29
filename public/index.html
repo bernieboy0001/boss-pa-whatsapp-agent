@@ -1,78 +1,438 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101114">
-  <title>Orbit — Executive PA</title>
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#090d16">
+  <title>Orbit — Executive AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,500;0,600;1,400;1,600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash of the wrong theme.
+    (function () {
+      try {
+        var t = localStorage.getItem("orbit_theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 </head>
 <body>
-  <div class="app" data-composition-id="pa-dashboard" data-duration="8" data-width="1920" data-height="1080">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">O</span><span>ORBIT</span><small>EXECUTIVE OS</small></div>
-      <nav class="nav" aria-label="Primary">
-        <a class="nav-item active" href="#overview"><span>⌂</span>Overview</a>
-        <a class="nav-item" href="#today"><span>◷</span>Calendar</a>
-        <a class="nav-item" href="#inbox"><span>⌁</span>Inbox <b>4</b></a>
-        <a class="nav-item" href="#travel"><span>↗</span>Travel</a>
-        <a class="nav-item" href="#remindersPanel"><span>✓</span>Reminders</a>
+  <div class="app" data-composition-id="pa-dashboard">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar" aria-label="Sidebar">
+      <div class="brand">
+        <span class="brand-mark">O</span>
+        <div class="brand-text">
+          <span class="brand-name">ORBIT</span>
+          <small class="brand-tag">EXECUTIVE OS</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Primary Navigation">
+        <a class="nav-item active" href="#overview" id="navOverview">
+          <span class="nav-icon">⌂</span>
+          <span class="nav-label">Overview</span>
+        </a>
+        <a class="nav-item" href="#today" id="navCalendar">
+          <span class="nav-icon">◷</span>
+          <span class="nav-label">Calendar</span>
+        </a>
+        <a class="nav-item" href="#inbox" id="navInbox">
+          <span class="nav-icon">⌁</span>
+          <span class="nav-label">Inbox</span>
+          <b class="nav-badge" id="inboxCountBadge">4</b>
+        </a>
+        <a class="nav-item" href="#travel" id="navTravel">
+          <span class="nav-icon">↗</span>
+          <span class="nav-label">Travel</span>
+        </a>
+        <a class="nav-item" href="#remindersPanel" id="navReminders">
+          <span class="nav-icon">✓</span>
+          <span class="nav-label">Reminders</span>
+        </a>
       </nav>
+
       <div class="sidebar-bottom">
-        <div class="system-status"><i></i><span>PA online</span><em>Local</em></div>
-        <button class="profile"><span class="avatar">JS</span><span><strong>J. Smith</strong><small>Principal</small></span><span>•••</span></button>
+        <div class="system-status" id="sysStatusIndicator" title="Production Cloud Connected">
+          <i class="status-pulse"></i>
+          <span>PA Online</span>
+          <em id="envBadge">Production</em>
+        </div>
+        <button class="profile" id="profileBtn" type="button" aria-label="View Executive Profile">
+          <span class="avatar">BE</span>
+          <span class="profile-info">
+            <strong>bernie</strong>
+            <small>Executive Lead</small>
+          </span>
+          <span class="profile-more">•••</span>
+        </button>
       </div>
     </aside>
 
+    <!-- Main Content Area -->
     <main class="main" id="overview">
       <header class="topbar">
-        <div><p class="eyebrow">TUESDAY, SEPTEMBER 22, 2026</p><h1>Good morning, James <span>✦</span></h1></div>
+        <div class="topbar-welcome">
+          <p class="eyebrow" id="currentDate">MONDAY · SEP 28, 2026</p>
+          <h1>Good morning, bernie <span class="sparkle">✦</span></h1>
+        </div>
         <div class="top-actions">
-          <button class="icon-btn" id="voiceBtn" aria-label="Start voice input">⌁</button>
-          <button class="icon-btn" id="themeToggle" aria-label="Toggle dark mode">☼</button>
-          <button class="primary-btn" id="quickAction">+ Quick action</button>
+          <button class="icon-btn" id="voiceBtn" title="Speak to Executive PA (Voice Input)" aria-label="Start voice input">
+            <span class="voice-wave-icon">⌁</span>
+          </button>
+          <button class="icon-btn" id="themeToggle" title="Toggle Dark / Light Theme" aria-label="Toggle dark mode">
+            <span id="themeIcon">☼</span>
+          </button>
+          <button class="primary-btn" id="quickAction" type="button">
+            <span class="plus-icon">+</span> Quick action
+          </button>
         </div>
       </header>
 
+      <!-- Voice Listening Active Banner (Hidden by default) -->
+      <div class="voice-banner" id="voiceBanner" style="display:none">
+        <div class="voice-anim">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <p id="voiceStatusText">Listening to your voice command...</p>
+        <button class="voice-stop-btn" id="voiceStopBtn">Stop</button>
+      </div>
+
+      <!-- Hero Deck -->
       <section class="hero-grid">
         <article class="hero-card">
-          <div class="hero-glow"></div><div class="hero-content">
-            <div class="hero-label"><span class="live-dot"></span> YOUR DAY, AT A GLANCE</div>
+          <div class="hero-glow"></div>
+          <div class="hero-content">
+            <div class="hero-label">
+              <span class="live-dot"></span> YOUR DAY, AT A GLANCE
+            </div>
             <h2>Clear runway.<br><i>Sharp focus.</i></h2>
-            <p id="heroSummary">You have a focused day ahead with 3 meetings and 5h 20m of open time.</p>
-            <button class="ghost-btn" id="heroPlan">View my day <span>→</span></button>
+            <p id="heroSummary">You have a focused day ahead with 3 meetings and 5h 20m of open executive time.</p>
+            <button class="ghost-btn" id="heroPlan" type="button">
+              View my day <span class="arrow">→</span>
+            </button>
           </div>
-          <div class="hero-orbit"><div class="orbit-ring ring-one"></div><div class="orbit-ring ring-two"></div><div class="orbit-core">✦</div></div>
+          <div class="hero-orbit" aria-hidden="true">
+            <div class="orbit-ring ring-one"></div>
+            <div class="orbit-ring ring-two"></div>
+            <div class="orbit-core">✦</div>
+          </div>
         </article>
-        <article class="metric-card"><p class="card-kicker">OPEN TIME</p><strong>5<span>h</span> 20<span>m</span></strong><div class="metric-line"><span style="width:68%"></span></div><small>68% of your day is flexible</small></article>
-        <article class="metric-card accent"><p class="card-kicker">NEXT UP</p><strong class="next-time">09:30</strong><h3>Product strategy</h3><small>with Maya, Leo + 2 others · 45 min</small><button class="mini-link">Open meeting →</button></article>
+
+        <article class="metric-card" id="metricOpenTime">
+          <p class="card-kicker">OPEN TIME</p>
+          <strong id="openTimeVal">5<span>h</span> 20<span>m</span></strong>
+          <div class="metric-line">
+            <span id="openTimeFill" style="width:68%"></span>
+          </div>
+          <small id="openTimeSub">68% of your day is flexible</small>
+        </article>
+
+        <article class="metric-card accent" id="metricNextUp">
+          <p class="card-kicker">NEXT UP</p>
+          <strong class="next-time" id="nextMeetingTime">09:30</strong>
+          <h3 id="nextMeetingTitle">Product strategy</h3>
+          <small id="nextMeetingDesc">with Maya, Leo + 2 others · 45 min</small>
+          <button class="mini-link" id="openMeetingBtn" type="button">Open meeting →</button>
+        </article>
       </section>
 
+      <!-- Workspace: Chat & Schedule -->
       <section class="workspace-grid">
+        <!-- Chat Interface -->
         <article class="surface chat-surface" id="inbox">
-          <div class="surface-head"><div><p class="card-kicker">YOUR PA</p><h2>What can I take off your plate?</h2></div><span class="pill"><i></i> Ready</span></div>
-          <div class="chat-messages" id="chatMessages" role="log" aria-live="polite"><div class="welcome-message"><span class="assistant-orb">✦</span><p>Ask me to schedule a meeting, find a flight, triage your inbox, or prep your day.</p></div></div>
-          <form class="chat-input-form" id="chatForm"><span class="input-icon">⌕</span><input id="chatInput" placeholder="Ask anything… e.g. “Find me a flight to London Friday”" autocomplete="off" aria-label="Chat input"><button class="send-btn" id="sendBtn" type="submit">Send <span>↗</span></button></form>
-          <div class="suggestions"><button>Plan my day</button><button>Find a flight</button><button>Summarize inbox</button></div>
+          <div class="surface-head">
+            <div>
+              <p class="card-kicker">YOUR EXECUTIVE PA</p>
+              <h2>What can I take off your plate?</h2>
+            </div>
+            <span class="pill" id="agentPill"><i class="live-dot pulse"></i> Ready</span>
+          </div>
+
+          <div class="chat-messages" id="chatMessages" role="log" aria-live="polite">
+            <div class="welcome-message">
+              <span class="assistant-orb">✦</span>
+              <p>Ask me to schedule a meeting, find a flight, triage your inbox, draft legal responses, or plan your week.</p>
+            </div>
+          </div>
+
+          <form class="chat-input-form" id="chatForm">
+            <span class="input-icon">⌕</span>
+            <input id="chatInput" placeholder="Ask anything… e.g. “Find me a flight to London Friday”" autocomplete="off" aria-label="Chat input">
+            <button class="send-btn" id="sendBtn" type="submit" aria-label="Send message">
+              Send <span class="send-arrow">↗</span>
+            </button>
+          </form>
+
+          <div class="suggestions" id="chatSuggestions">
+            <button type="button" class="chip-btn">Plan my day</button>
+            <button type="button" class="chip-btn">Find a flight</button>
+            <button type="button" class="chip-btn">Summarize inbox</button>
+            <button type="button" class="chip-btn">Check reminders</button>
+          </div>
         </article>
 
+        <!-- Schedule / Calendar Surface -->
         <article class="surface schedule-surface" id="today">
-          <div class="surface-head"><div><p class="card-kicker">TUESDAY · SEP 22</p><h2>Today</h2></div><button class="text-btn" id="refreshToday">Refresh ↻</button></div>
-          <div class="schedule-list" id="todaySchedule"></div><div class="free-busy" id="freeBusy"></div>
-          <div class="schedule-tabs"><button class="tab-btn active" data-tab="today">Today</button><button class="tab-btn" data-tab="week">This week</button><button class="tab-btn" data-tab="flights">Itinerary</button></div>
-          <div class="tab-content hidden-content"><div class="tab-pane active" id="todayPane"><div id="todayDate"></div></div><div class="tab-pane" id="weekPane"><div class="week-grid" id="weekGrid"></div></div><div class="tab-pane" id="flightsPane"><div class="itinerary" id="itinerary"></div></div></div>
+          <div class="surface-head">
+            <div>
+              <p class="card-kicker" id="todayKicker">EXECUTIVE AGENDA</p>
+              <h2 id="todayDate">Today</h2>
+            </div>
+            <button class="text-btn" id="refreshToday" type="button" title="Refresh Schedule">
+              Refresh <span class="refresh-icon">↻</span>
+            </button>
+          </div>
+
+          <!-- Schedule Tabs -->
+          <div class="schedule-tabs" role="tablist">
+            <button class="tab-btn active" data-tab="today" role="tab" aria-selected="true">Today</button>
+            <button class="tab-btn" data-tab="week" role="tab" aria-selected="false">This week</button>
+            <button class="tab-btn" data-tab="flights" role="tab" aria-selected="false">Itinerary</button>
+          </div>
+
+          <!-- Tab Panes -->
+          <div class="tab-container">
+            <!-- Today Tab -->
+            <div class="tab-pane active" id="todayPane" role="tabpanel">
+              <ul class="schedule-list" id="todaySchedule"></ul>
+              <div class="free-busy" id="freeBusy"></div>
+            </div>
+
+            <!-- Week Tab -->
+            <div class="tab-pane" id="weekPane" role="tabpanel">
+              <div class="week-grid" id="weekGrid"></div>
+            </div>
+
+            <!-- Flights / Travel Tab -->
+            <div class="tab-pane" id="flightsPane" role="tabpanel">
+              <div class="itinerary" id="itinerary"></div>
+            </div>
+          </div>
         </article>
       </section>
 
+      <!-- Bottom Grid: Reminders & Preferences -->
       <section class="bottom-grid">
-        <article class="surface mini-surface" id="remindersPanel"><div class="surface-head"><div><p class="card-kicker">KEEP MOVING</p><h2>Reminders</h2></div><button class="add-btn" id="addReminderBtn">+ Add</button></div><ul class="reminder-list" id="reminderList"></ul></article>
-        <article class="surface mini-surface"><div class="surface-head"><div><p class="card-kicker">PREFERENCE ENGINE</p><h2>Personal settings</h2></div><span class="settings-icon">⚙</span></div><form class="settings-form compact" id="settingsForm"><label>Home airport<input id="prefHomeAirport" placeholder="JFK" maxlength="3"></label><label>Cabin<select id="prefCabin"><option value="economy">Economy</option><option value="business">Business</option><option value="first">First</option></select></label><label>Seat<select id="prefSeat"><option value="aisle">Aisle</option><option value="window">Window</option><option value="middle">Middle</option></select></label><label>Timezone<select id="prefTimezone"></select></label><input type="hidden" id="prefNoMeetingsBefore"><input type="hidden" id="prefAirline"><button class="save-btn" type="submit">Save preferences</button></form></article>
+        <!-- Reminders Card -->
+        <article class="surface mini-surface" id="remindersPanel">
+          <div class="surface-head">
+            <div>
+              <p class="card-kicker">KEEP MOVING</p>
+              <h2>Reminders</h2>
+            </div>
+            <button class="add-btn" id="addReminderBtn" type="button">+ Add</button>
+          </div>
+          <ul class="reminder-list" id="reminderList"></ul>
+          <div class="trends-list" id="trendsList"></div>
+        </article>
+
+        <!-- Settings Card -->
+        <article class="surface mini-surface" id="settingsPanel">
+          <div class="surface-head">
+            <div>
+              <p class="card-kicker">PREFERENCE ENGINE</p>
+              <h2>Personal settings</h2>
+            </div>
+            <span class="settings-icon">⚙</span>
+          </div>
+
+          <form class="settings-form compact" id="settingsForm">
+            <label>
+              <span>Home airport</span>
+              <input id="prefHomeAirport" placeholder="JFK" maxlength="3" autocomplete="off">
+            </label>
+            <label>
+              <span>Cabin</span>
+              <select id="prefCabin">
+                <option value="economy">Economy</option>
+                <option value="business">Business</option>
+                <option value="first">First</option>
+              </select>
+            </label>
+            <label>
+              <span>Seat</span>
+              <select id="prefSeat">
+                <option value="aisle">Aisle</option>
+                <option value="window">Window</option>
+                <option value="middle">Middle</option>
+              </select>
+            </label>
+            <label>
+              <span>Timezone</span>
+              <select id="prefTimezone">
+                <option value="America/New_York">Eastern (US & Canada)</option>
+                <option value="America/Chicago">Central (US & Canada)</option>
+                <option value="America/Denver">Mountain (US & Canada)</option>
+                <option value="America/Los_Angeles">Pacific (US & Canada)</option>
+                <option value="Europe/London">London (GMT / BST)</option>
+                <option value="Europe/Paris">Paris, Berlin, Rome (CET)</option>
+                <option value="Asia/Dubai">Dubai (GST)</option>
+                <option value="Asia/Singapore">Singapore (SGT)</option>
+                <option value="Asia/Tokyo">Tokyo (JST)</option>
+                <option value="UTC">UTC / Coordinated Universal Time</option>
+              </select>
+            </label>
+            <input type="hidden" id="prefNoMeetingsBefore" value="09:00">
+            <input type="hidden" id="prefAirline" value="">
+            <div class="settings-actions">
+              <button class="save-btn" id="savePrefsBtn" type="submit">Save preferences</button>
+              <span class="save-feedback" id="saveFeedback"></span>
+            </div>
+          </form>
+        </article>
       </section>
     </main>
-    <dialog class="modal" id="reminderModal"><form method="dialog" class="modal-content"><h3>New reminder</h3><label>What should I remember?<input id="remText" required></label><label>Due <input type="datetime-local" id="remDue"></label><label>Repeats <select id="remRecurring"><option value="">Never</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><div class="modal-actions"><button value="cancel" class="text-btn">Cancel</button><button value="default" class="primary-btn">Add reminder</button></div></form></dialog>
-    <dialog class="modal" id="scheduleModal"><form method="dialog" class="modal-content"><p class="card-kicker">CALENDAR</p><h3>Schedule something</h3><p class="modal-help">I’ll show you the proposed change first. Nothing is added until you confirm.</p><label>What is it?<input id="scheduleSummary" placeholder="e.g. 1:1 with Sara" required></label><label>Date<input type="date" id="scheduleDate" required></label><label>Time<input type="time" id="scheduleTime" required></label><div class="modal-actions"><button value="cancel" class="text-btn">Cancel</button><button value="default" class="primary-btn">Review proposal</button></div></form></dialog>
+
+    <!-- Modals & Dialogs -->
+
+    <!-- Reminder Modal -->
+    <dialog class="modal" id="reminderModal">
+      <form method="dialog" class="modal-content" id="reminderForm">
+        <div class="modal-header">
+          <h3>New reminder</h3>
+          <button type="button" class="close-x-btn" onclick="document.getElementById('reminderModal').close()">✕</button>
+        </div>
+        <label>
+          <span>What should I remember?</span>
+          <input id="remText" placeholder="e.g. Follow up with board on Q3 deck" required>
+        </label>
+        <label>
+          <span>Due date & time</span>
+          <input type="datetime-local" id="remDue">
+        </label>
+        <label>
+          <span>Repeats</span>
+          <select id="remRecurring">
+            <option value="">Never</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </label>
+        <div class="modal-actions">
+          <button type="button" value="cancel" class="text-btn" onclick="document.getElementById('reminderModal').close()">Cancel</button>
+          <button type="submit" value="default" class="primary-btn">Add reminder</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Schedule Modal -->
+    <dialog class="modal" id="scheduleModal">
+      <form method="dialog" class="modal-content" id="scheduleForm">
+        <div class="modal-header">
+          <div>
+            <p class="card-kicker">CALENDAR</p>
+            <h3>Schedule something</h3>
+          </div>
+          <button type="button" class="close-x-btn" onclick="document.getElementById('scheduleModal').close()">✕</button>
+        </div>
+        <p class="modal-help">I’ll show you the proposed change first. Nothing is committed until you confirm.</p>
+        <label>
+          <span>What is it?</span>
+          <input id="scheduleSummary" placeholder="e.g. 1:1 with Sara re: M&A" required>
+        </label>
+        <div class="modal-row">
+          <label>
+            <span>Date</span>
+            <input type="date" id="scheduleDate" required>
+          </label>
+          <label>
+            <span>Time</span>
+            <input type="time" id="scheduleTime" required>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" value="cancel" class="text-btn" onclick="document.getElementById('scheduleModal').close()">Cancel</button>
+          <button type="submit" value="default" class="primary-btn">Review proposal</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Meeting Details Modal -->
+    <dialog class="modal" id="meetingModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <p class="card-kicker">UPCOMING MEETING</p>
+            <h3 id="modalMeetingTitle">Product strategy</h3>
+          </div>
+          <button type="button" class="close-x-btn" onclick="document.getElementById('meetingModal').close()">✕</button>
+        </div>
+        <div class="meeting-details-box">
+          <div class="meeting-meta-item">
+            <span class="meta-label">Time:</span>
+            <strong id="modalMeetingTime">Today at 09:30 AM (45 min)</strong>
+          </div>
+          <div class="meeting-meta-item">
+            <span class="meta-label">Attendees:</span>
+            <span id="modalMeetingAttendees">Maya (Lead Designer), Leo (Staff Eng), Bernie (Boss)</span>
+          </div>
+          <div class="meeting-meta-item">
+            <span class="meta-label">Platform:</span>
+            <span>Google Meet (Encrypted Video)</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="text-btn" onclick="document.getElementById('meetingModal').close()">Close</button>
+          <a id="joinMeetLink" href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer" class="primary-btn">
+            Join meeting ↗
+          </a>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Profile & System Modal -->
+    <dialog class="modal" id="profileModal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div class="profile-header-wrap">
+            <span class="avatar lg">BE</span>
+            <div>
+              <h3>bernie</h3>
+              <p class="modal-subtitle">Executive Lead · Private Office</p>
+            </div>
+          </div>
+          <button type="button" class="close-x-btn" onclick="document.getElementById('profileModal').close()">✕</button>
+        </div>
+        <div class="profile-details-list">
+          <div class="profile-stat-row">
+            <span>Environment</span>
+            <strong class="env-tag-live">● Cloud Production (Live)</strong>
+          </div>
+          <div class="profile-stat-row">
+            <span>AI Brain Engine</span>
+            <span>Gemini / Multi-Model Autopilot</span>
+          </div>
+          <div class="profile-stat-row">
+            <span>Connected Channels</span>
+            <span>WhatsApp Business, Dashboard Webhook</span>
+          </div>
+          <div class="profile-stat-row">
+            <span>Calendar Provider</span>
+            <span>Google Calendar Sync (Live)</span>
+          </div>
+          <div class="profile-stat-row">
+            <span>Flight Engine</span>
+            <span>Global Amadeus / Flight Search</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="text-btn" onclick="document.getElementById('profileModal').close()">Dismiss</button>
+          <button type="button" class="primary-btn" id="profileSettingsBtn">Edit Preferences</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toastContainer" aria-live="assertive"></div>
   </div>
+
   <script type="module" src="/dashboard.js"></script>
 </body>
 </html>

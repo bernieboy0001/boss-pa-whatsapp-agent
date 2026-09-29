@@ -32,19 +32,28 @@ function fromISO(iso) {
   return { date, time };
 }
 
+function getTZOffset(tz) {
+  const d = new Date();
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const h = String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0");
+  const m = String(Math.abs(offset) % 60).padStart(2, "0");
+  return `${sign}${h}:${m}`;
+}
+
 export async function getTodaySummary(req) {
   const date = req?.date ?? todayISO();
   const cal = getCalendarClient();
   const tz = cfg.bossTimezone ?? "America/New_York";
 
-  const start = `${date}T00:00:00`;
-  const end = `${date}T23:59:59`;
+  // RFC3339 format with timezone offset
+  const start = new Date(`${date}T00:00:00${getTZOffset(tz)}`).toISOString();
+  const end = new Date(`${date}T23:59:59${getTZOffset(tz)}`).toISOString();
 
   const res = await cal.events.list({
     calendarId: "primary",
     timeMin: start,
     timeMax: end,
-    timeZone: tz,
     singleEvents: true,
     orderBy: "startTime",
   });
