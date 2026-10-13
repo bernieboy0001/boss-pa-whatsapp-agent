@@ -169,11 +169,11 @@ export async function ensureHydrated() {
   if (hydrationPromise) return hydrationPromise;
   hydrationPromise = (async () => {
     if (storeKind !== "kv") {
-      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets"]) hydrateFromMemoryOnly(ns);
+      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets", "sessions"]) hydrateFromMemoryOnly(ns);
       return;
     }
     try {
-      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets"]) {
+      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets", "sessions"]) {
         await hydrateNamespace(ns);
       }
     } catch (err) {

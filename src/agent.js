@@ -40,10 +40,25 @@ export async function handleMessage(text, opts = {}) {
   // A mutable action can ONLY act on a pending proposal — never standalone.
   // Confirms/declines are intercepted here, deterministically, so a stray
   // "book f1" can never reach the LLM and make up options out of thin air.
+  //
+  // Any plain message clears a half-finished "want me to draft a reply?" offer,
+  // so only the very next confirm/decline can act on it.
+  if (!isConfirm(low) && !isDecline(low)) delete session.awaitingDraftConfirm;
+
   if (session.pendingFlight && isConfirm(low)) return confirmFlight(low, session);
   if (session.pendingCalendar && isConfirm(low)) return confirmCalendar(low, session);
   if (session.pendingEmail && (isConfirm(low) || isSend(low))) return confirmEmail(session);
+  // The brain offered "want me to draft a reply?" but staged nothing (it keeps
+  // no memory between turns). On "yes", stage the draft for the top message now.
+  if (session.awaitingDraftConfirm && isConfirm(low)) {
+    delete session.awaitingDraftConfirm;
+    return stageTopReply(session);
+  }
   if ((session.pendingFlight || session.pendingCalendar || session.pendingEmail) && isDecline(low)) return clearProposal(session);
+  if (session.awaitingDraftConfirm && isDecline(low)) {
+    delete session.awaitingDraftConfirm;
+    return "OK — no draft.";
+  }
   if (isConfirm(low) || isDecline(low)) {
     return "Nothing pending to confirm or cancel right now. Try: \"flights JFK to LHR Friday\", \"schedule 1:1 with Sara Wed 4pm\", \"what's my day?\", or \"inbox?\".";
   }
@@ -57,7 +72,13 @@ export async function handleMessage(text, opts = {}) {
   if (brainConfigured() && (isDayQuery(low) || isWeekQuery(low) || isEmailQuery(low))) {
     try {
       const answer = await brainReply(t, { session });
-      if (answer) return answer;
+      if (answer) {
+        // Any inbox answer is a natural lead-in to "yes, draft a reply", so arm
+        // the next confirm. Parsing the answer's wording is too brittle — the
+        // model rephrases the offer ("draft a response" vs "address the email").
+        if (isEmailQuery(low) && !session.pendingEmail) session.awaitingDraftConfirm = true;
+        return answer;
+      }
       degraded.reason = "empty-answer";
     } catch (err) {
       console.warn("[agent] brain failed:", err.message);
@@ -79,7 +100,10 @@ export async function handleMessage(text, opts = {}) {
   if (brainConfigured()) {
     try {
       const answer = await brainReply(t, { session });
-      if (answer) return answer;
+      if (answer) {
+        if (!session.pendingEmail && offersDraft(answer)) session.awaitingDraftConfirm = true;
+        return answer;
+      }
       degraded.reason = "empty-answer";
     } catch (err) {
       console.warn("[agent] brain failed:", err.message);
@@ -124,6 +148,11 @@ function isWeekQuery(low) {
 
 function isEmailQuery(low) {
   return /email|inbox|\bmail\b/.test(low);
+}
+
+/** Did the assistant's own reply offer to draft/respond to mail? */
+function offersDraft(text) {
+  return /(want|would you like|shall i|should i|do you want|like me)\s+(me\s+)?to\s+(draft|reply|respond|write|compose|send|address|handle|take care of|deal with)/i.test(text || "");
 }
 
 function isItineraryQuery(low) {
@@ -336,6 +365,7 @@ function clearProposal(session) {
   delete session.pendingFlight;
   delete session.pendingCalendar;
   delete session.pendingEmail;
+  delete session.awaitingDraftConfirm;
   return had ? `OK — dropped the pending ${had}.` : "Nothing pending.";
 }
 
@@ -386,10 +416,57 @@ function senderName(from = "") {
   return (m?.[1] ?? String(from)).trim() || String(from);
 }
 
+/** Read the recent inbox (shared by the summary and the draft-on-confirm paths). */
+async function readInbox() {
+  try {
+    return await readMail({ query: "in:inbox newer_than:14d", max: 8 });
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/** Stage a reply to the top message, returning the review text. */
+async function stageDraft(box, session) {
+  const first = box.messages[0];
+  const draft = await draftReply({ to: first.from, topic: first.subject });
+  session.pendingEmail = {
+    to: first.from,
+    subject: draft.subject ?? `RE: ${first.subject ?? ""}`,
+    body: draft.body ?? "",
+  };
+  delete session.awaitingDraftConfirm;
+  return `✍️ Draft ready for ${senderName(first.from)} — review it, then say "send" to send (or "never mind"):\n\n${draft.body ?? ""}`;
+}
+
+/**
+ * Stage a reply after the boss answers "yes" to a draft offer. Prefer the brain
+ * — it re-reads the mail, picks the message it flagged, and composes the reply
+ * itself via draft_reply — and only fall back to a template on the newest
+ * message when the brain is unavailable.
+ */
+async function stageTopReply(session) {
+  if (brainConfigured()) {
+    try {
+      const answer = await brainReply(
+        "The boss said yes to your offer to draft a reply. Read the inbox, pick the message you flagged as needing a reply, compose the full reply yourself, and call draft_reply to stage it now. Do NOT send.",
+        { session },
+      );
+      if (answer && session.pendingEmail) return answer;
+    } catch (e) {
+      console.warn("[agent] draft-on-confirm brain failed:", e.message);
+    }
+  }
+  const box = await readInbox();
+  if (box.simulated) return `📥 Demo mail — no Gmail provider configured.\n\n${box.top}`;
+  if (box.error) return `📥 Could not read the mailbox: ${box.error}`;
+  if (!box.messages?.length) return "📥 Nothing new to reply to — you're clear.";
+  return stageDraft(box, session);
+}
+
 async function handleEmail(low, session) {
   // Fallback path (no brain): read the real mailbox and answer like a PA —
   // "you have a mail from X" plus a one-line summary — never a raw dump.
-  const box = await readMail({ query: "in:inbox newer_than:14d", max: 8 });
+  const box = await readInbox();
   if (box.simulated) return `📥 Demo mail — no Gmail provider configured.\n\n${box.top}`;
   if (box.error) return `📥 Could not read the mailbox: ${box.error}`;
   if (!box.messages.length) return "📥 Nothing new in the inbox — you're clear.";
@@ -407,14 +484,7 @@ async function handleEmail(low, session) {
   lines.push("");
 
   if (/reply|respond|draft/.test(low)) {
-    const first = box.messages[0];
-    const draft = await draftReply({ to: first.from, topic: first.subject });
-    session.pendingEmail = {
-      to: first.from,
-      subject: draft.subject ?? `RE: ${first.subject ?? ""}`,
-      body: draft.body ?? "",
-    };
-    lines.push(`✍️ Draft ready for ${senderName(first.from)} — review it, then say "send" to send (or "never mind"):`, "", draft.body ?? "");
+    lines.push(await stageDraft(box, session));
   } else {
     lines.push(`Want me to go deeper? Say "reply to <name> saying ..." or "read the one from <name>".`);
   }
