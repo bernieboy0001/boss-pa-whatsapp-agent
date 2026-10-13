@@ -218,7 +218,7 @@ function initTheme() {
       themeToggle?.setAttribute("title", t === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode");
     }
     if (metaThemeColor) {
-      metaThemeColor.setAttribute("content", t === "dark" ? "#0a0c12" : "#f6f6f3");
+      metaThemeColor.setAttribute("content", t === "dark" ? "#1a1313" : "#f7f5f3");
     }
   }
 }
