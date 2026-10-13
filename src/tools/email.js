@@ -2,6 +2,7 @@ import { cfg } from "../config.js";
 import { inboxSummary as gmailInbox, draftReply as gmailDraft, sendEmail as gmailSend } from "./google-gmail.js";
 import { inboxSummary as oauthInbox, draftReply as oauthDraft, sendEmail as oauthSend } from "./google-gmail-oauth.js";
 import { readMailbox, mailboxStats } from "./mail-reader.js";
+import { markProviderOk, markProviderFail } from "./provider-health.js";
 
 /**
  * Demo fixtures, used ONLY when no mail provider is configured at all.
@@ -53,14 +54,24 @@ const anyProvider = () => useServiceAccount() || useOAuth2();
  */
 export async function inboxSummary(req) {
   if (useServiceAccount()) {
-    try { return await gmailInbox(req); } catch (e) {
+    try {
+      const out = await gmailInbox(req);
+      markProviderOk("email");
+      return out;
+    } catch (e) {
       console.warn("[email] Service Account failed:", e.message);
+      markProviderFail("email", e);
       if (!useOAuth2()) return { ...stubInbox(), error: `Service account read failed: ${e.message}` };
     }
   }
   if (useOAuth2()) {
-    try { return await oauthInbox(req); } catch (e) {
+    try {
+      const out = await oauthInbox(req);
+      markProviderOk("email");
+      return out;
+    } catch (e) {
       console.warn("[email] OAuth2 failed:", e.message);
+      markProviderFail("email", e);
       return { unread: 0, urgent: [], promise: [], count: 0, top: "Could not read the inbox", error: e.message };
     }
   }
@@ -78,35 +89,51 @@ export async function readMail(req) {
       top: "Demo mail — no Gmail provider configured",
     };
   }
-  return readMailbox(req ?? {});
+  try {
+    const out = await readMailbox(req ?? {});
+    markProviderOk("email");
+    return out;
+  } catch (e) {
+    markProviderFail("email", e);
+    throw e;
+  }
 }
 
 export async function mailboxStatsSafe() {
   if (!anyProvider()) return { simulated: true, account: null, totalMessages: null, unread: null, last7Days: null };
   try {
-    return await mailboxStats();
+    const out = await mailboxStats();
+    markProviderOk("email");
+    return out;
   } catch (e) {
     console.warn("[email] mailboxStats failed:", e.message);
+    markProviderFail("email", e);
     return { account: null, totalMessages: null, unread: null, last7Days: null, error: e.message };
   }
 }
 
 export async function draftReply(req) {
-  if (useServiceAccount()) {
-    try { return await gmailDraft(req); } catch (e) { console.warn("[email] Service Account failed, falling back:", e.message); }
-  }
-  if (useOAuth2()) {
-    try { return await oauthDraft(req); } catch (e) { console.warn("[email] OAuth2 failed, falling back to stub:", e.message); }
+  if (anyProvider()) {
+    try {
+      return useServiceAccount() ? await gmailDraft(req) : await oauthDraft(req);
+    } catch (e) {
+      console.warn("[email] draft failed:", e.message);
+      return { error: `Could not create the draft: ${e.message}`, to: req?.to, subject: `RE: ${req?.topic ?? ""}`, body: "" };
+    }
   }
   return stubDraft(req);
 }
 
 export async function sendEmail(req) {
-  if (useServiceAccount()) {
-    try { return await gmailSend(req); } catch (e) { console.warn("[email] Service Account failed, falling back:", e.message); }
-  }
-  if (useOAuth2()) {
-    try { return await oauthSend(req); } catch (e) { console.warn("[email] OAuth2 failed, falling back to stub:", e.message); }
+  if (anyProvider()) {
+    try {
+      return useServiceAccount() ? await gmailSend(req) : await oauthSend(req);
+    } catch (e) {
+      // Never return `ok: true` here. stubSend did, which meant a failed send
+      // was reported to the boss as sent — no email, no error, no recourse.
+      console.warn("[email] send failed:", e.message);
+      return { ok: false, to: req?.to, error: `Could not send: ${e.message}` };
+    }
   }
   return stubSend(req);
 }

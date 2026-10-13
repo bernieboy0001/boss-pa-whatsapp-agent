@@ -114,3 +114,47 @@ export function addDays(dateStr, delta) {
   const shifted = new Date(Date.UTC(y, m - 1, d + delta));
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
 }
+
+function normalizeTime(timeStr) {
+  return /^\d{1,2}:\d{2}$/.test(timeStr ?? "")
+    ? timeStr.padStart(5, "0")
+    : "00:00";
+}
+
+/**
+ * The UTC instant for a wall-clock `dateStr`/`timeStr` in `tz`.
+ * Generalises `zonedDayBounds` (which only does midnight) to any time-of-day.
+ */
+export function zonedInstant(dateStr, timeStr, tz) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const [hh, mm] = normalizeTime(timeStr).split(":").map(Number);
+  let instant = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
+  for (let i = 0; i < 2; i += 1) {
+    instant = new Date(Date.UTC(y, m - 1, d, hh, mm, 0) - zoneOffsetMs(instant, tz));
+  }
+  return instant;
+}
+
+/**
+ * RFC3339 string for a wall-clock time in `tz`, e.g. `09:30` on 2026-09-29 in
+ * New York -> `2026-09-29T09:30:00-04:00`.
+ *
+ * Why not a bare `toISOString()`: the Calendar API needs an unambiguous
+ * instant. Formatting a naive local string and letting the API pair it with a
+ * `timeZone` broke as soon as the server ran in a different zone — a booked
+ * `09:30` New York resolved to 13:30Z while a `+60min` end computed on the UTC
+ * host stayed at 10:30Z, so every booking was rejected for ending before it
+ * started. Embedding the *boss's* real offset fixes that at the source.
+ *
+ * `addMinutes` shifts before formatting, so a start/end pair can never drift
+ * into different reference frames (and a late-evening event rolls the date).
+ */
+export function zonedISOString(dateStr, timeStr, tz, addMinutes = 0) {
+  let instant = zonedInstant(dateStr, timeStr, tz);
+  if (addMinutes) instant = new Date(instant.getTime() + addMinutes * 60000);
+  const p = partsAt(instant, tz);
+  const offMin = Math.round(zoneOffsetMs(instant, tz) / 60000);
+  const sign = offMin >= 0 ? "+" : "-";
+  const abs = Math.abs(offMin);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}

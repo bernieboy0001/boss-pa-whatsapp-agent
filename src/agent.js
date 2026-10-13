@@ -222,12 +222,26 @@ async function confirmFlight(low, session) {
 async function handleDay(low) {
   const date = detectDate(low) || undefined;
   const summary = await getTodaySummary({ date });
-  const lines = [`🗓 ${summary.day} — ${summary.date}`, "", ...summary.items.map((it) => `${it.time}  ${it.title}`), ""];
+  const lines = [`🗓 ${summary.day} — ${summary.date}`, ""];
+
+  // If the live calendar couldn't be read, say so rather than presenting an
+  // empty day as a genuinely free one.
+  if (summary.degraded) {
+    lines.push(`⚠️ Couldn't read your live calendar — ${summary.error}`);
+    lines.push("Showing only events booked through this assistant.");
+    lines.push("");
+  }
+
+  lines.push(...summary.items.map((it) => `${it.time}  ${it.title}`), "");
 
   if (/free|busy|slot|when|open/.test(low)) {
     const fb = await freeBusy({ date });
-    lines.push(`Free: ${fb.free.join(", ")}`);
-    lines.push(`Busy: ${fb.busy.join(", ")}`);
+    if (fb.degraded || summary.degraded) {
+      lines.push("Free/busy unavailable — calendar not readable right now.");
+    } else {
+      lines.push(`Free: ${fb.free.join(", ")}`);
+      lines.push(`Busy: ${fb.busy.join(", ")}`);
+    }
   }
   return lines.join("\n");
 }

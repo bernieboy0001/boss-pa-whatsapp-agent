@@ -15,6 +15,7 @@ import { getReminders, getTrends, suggestTime, addReminder, updateReminder, dele
 import { searchLaw, findTemplates } from "./tools/legal.js";
 import { ensureHydrated, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
 import { zonedDateStr, zonedToday, addDays } from "./tools/zoned-time.js";
+import { getProviderHealth } from "./tools/provider-health.js";
 
 /**
  * Phase 2: the always-on webhook the WhatsApp channel (Photon/Spectrum) calls.
@@ -64,6 +65,9 @@ function healthStatus() {
     // durability it does not have.
     store: storeKind,
     storeDurable: storeKind === "kv",
+    // Last observed outcome of each external provider. A dead OAuth token shows
+    // up here instead of hiding behind a synthetic calendar.
+    providers: getProviderHealth(),
   };
 }
 app.get("/healthz", (_req, res) => res.json(healthStatus()));
@@ -92,7 +96,7 @@ app.get("/api/day", async (req, res) => {
     const fb = await freeBusy({ date: summary?.date || date });
     res.json({ summary, freeBusy: fb });
   } catch (e) {
-    console.error("[api/day] error:", e);
+    console.error("[api/day] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -108,11 +112,17 @@ app.get("/api/week", async (req, res) => {
     for (let i = 0; i < 7; i++) {
       const date = addDays(first, i);
       const summary = await getTodaySummary({ date });
-      days.push({ date, day: summary?.day, summary: summary?.items ?? [] });
+      days.push({
+        date,
+        day: summary?.day,
+        summary: summary?.items ?? [],
+        degraded: Boolean(summary?.degraded),
+        ...(summary?.error ? { error: summary.error } : {}),
+      });
     }
     res.json({ days });
   } catch (e) {
-    console.error("[api/week] error:", e);
+    console.error("[api/week] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -121,7 +131,7 @@ app.get("/api/inbox", async (_req, res) => {
   try {
     res.json(await inboxSummary({}));
   } catch (e) {
-    console.error("[api/inbox] error:", e);
+    console.error("[api/inbox] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -138,7 +148,10 @@ app.get("/api/mail", async (req, res) => {
     });
     res.json(result);
   } catch (e) {
-    console.error("[api/mail] error:", e);
+    // `.message` only: the raw gaxios error carries `config.data`, which
+    // includes the OAuth refresh_token. Logging the object would write the
+    // token to the platform logs in plaintext.
+    console.error("[api/mail] error:", e.message);
     res.status(502).json({ error: e.message });
   }
 });
@@ -147,7 +160,7 @@ app.get("/api/mail-stats", async (_req, res) => {
   try {
     res.json(await mailboxStatsSafe());
   } catch (e) {
-    console.error("[api/mail-stats] error:", e);
+    console.error("[api/mail-stats] error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

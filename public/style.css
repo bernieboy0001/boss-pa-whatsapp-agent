@@ -591,6 +591,26 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .schedule-time { color: var(--primary-light); font-variant-numeric: tabular-nums; font-family: "JetBrains Mono", ui-monospace, monospace; }
 .schedule-title { color: var(--text); }
+.cal-source {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.cal-banner {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(240, 180, 60, 0.12);
+  border: 1px solid rgba(240, 180, 60, 0.35);
+  border-radius: 8px;
+}
 .attendees { grid-column: 2; color: var(--dim); font-size: 10px; }
 .free-busy { margin-top: 5px; }
 .fb-row { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 7px; }

@@ -1,5 +1,6 @@
 ﻿import http from "node:http";
 import handler from "../api/[...path].js";
+import { zonedISOString } from "../src/tools/zoned-time.js";
 
 // Minimal adapter: expose the bundled Vercel handler over real HTTP so we can
 // exercise Express routing exactly as the platform will.
@@ -131,6 +132,46 @@ try {
 } catch (e) {
   failures++;
   console.log(`FAIL reminder list threw: ${e.message}`);
+}
+
+// The booking window must be internally consistent regardless of the host
+// zone. Regression guard: start/end were once built in different reference
+// frames, so every book/move was rejected for ending before it started.
+{
+  const tz = "America/New_York";
+  const cases = [
+    ["2026-09-29", "09:30"],
+    ["2026-03-08", "01:30"], // US spring-forward
+    ["2026-11-01", "01:30"], // US fall-back
+    ["2026-12-31", "23:30"], // rolls into next year
+  ];
+  const bad = cases.filter(([d, t]) => {
+    const s = zonedISOString(d, t, tz);
+    const e = zonedISOString(d, t, tz, 60);
+    return !(Date.parse(e) > Date.parse(s)) || (Date.parse(e) - Date.parse(s)) !== 3600000;
+  });
+  const ok = bad.length === 0;
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"} booking window start<end across DST (${cases.length - bad.length}/${cases.length})`);
+}
+
+// A configured-but-unreadable calendar must never dress the synthetic stub
+// schedule up as the boss's real day. This holds whether the local token is
+// valid or not: if it IS valid we get real events, if it ISN'T we get an
+// empty/local-only day — never "Standup — Q3 ops".
+try {
+  const day = await (await fetch(`http://127.0.0.1:${port}/api/day`)).json();
+  const items = day.summary?.items ?? [];
+  const fabricated = items.some((i) => /Standup — Q3 ops|Vendor review|Acme Cloud|Flight to counterparty/.test(i.title ?? ""));
+  const ok = Array.isArray(items) && !fabricated;
+  if (!ok) failures++;
+  console.log(
+    `${ok ? "PASS" : "FAIL"} no fabricated calendar events leak into /api/day ` +
+    `(items=${items.length}, degraded=${Boolean(day.summary?.degraded)})`,
+  );
+} catch (e) {
+  failures++;
+  console.log(`FAIL /api/day honesty threw: ${e.message}`);
 }
 
 server.close();

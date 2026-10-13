@@ -2,7 +2,7 @@ import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getOAuth2Client } from "./oauth2-client.js";
-import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName } from "./zoned-time.js";
+import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName, zonedISOString } from "./zoned-time.js";
 
 let calendarClient = null;
 
@@ -21,10 +21,22 @@ function todayISO() {
   return zonedToday(bossZone());
 }
 
-function toISO(dateStr, timeStr) {
-  if (!dateStr) return null;
-  if (!timeStr) return `${dateStr}T00:00:00`;
-  return `${dateStr}T${timeStr}:00`;
+/**
+ * Start/end for a `"YYYY-MM-DD HH:MM"` booking string, as offset-aware
+ * RFC3339 in the boss's zone. Both ends come from the same instant maths so
+ * they can never land in different reference frames.
+ */
+function eventWindow(when, tz, minutes = 60) {
+  const parts = String(when ?? "").trim().split(/\s+/);
+  const dateStr = parts[0];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr ?? "")) return null;
+  const timeStr = parts[1];
+  return {
+    start: zonedISOString(dateStr, timeStr, tz),
+    end: zonedISOString(dateStr, timeStr, tz, minutes),
+    // Stored locally for display; `.slice(11,16)` still yields the wall clock.
+    local: zonedISOString(dateStr, timeStr, tz),
+  };
 }
 
 /**
@@ -217,32 +229,30 @@ export async function bookOrMove(req) {
       : null;
     if (!target) return { ok: false, error: `No event matching "${summary}" found to move.` };
 
-    const start = toISO(...(when?.split(" ") ?? []));
-    const end = start ? new Date(start).getTime() + 60 * 60 * 1000 : null;
-    const endISO = end ? new Date(end).toISOString() : null;
+    const window = eventWindow(when, tz);
+    if (!window) return { ok: false, error: "I need a date and time like 2026-09-29 09:30 to reschedule." };
 
     if (target.gcalId) {
       await cal.events.patch({
         calendarId: target.calendarId || calId,
         eventId: target.gcalId,
         requestBody: {
-          start: { dateTime: start, timeZone: tz },
-          end: { dateTime: endISO, timeZone: tz },
+          start: { dateTime: window.start, timeZone: tz },
+          end: { dateTime: window.end, timeZone: tz },
         },
       });
     }
-    const moved = updateEvent(target.id, { when: start });
+    const moved = updateEvent(target.id, { when: window.local });
     return { ok: true, action, id: target.id, summary: moved.summary, when: moved.when, note: "rescheduled on calendar" };
   }
 
-  const start = toISO(...(when?.split(" ") ?? []));
-  const end = start ? new Date(start).getTime() + 60 * 60 * 1000 : null;
-  const endISO = end ? new Date(end).toISOString() : null;
+  const window = eventWindow(when, tz);
+  if (!window) return { ok: false, error: "I need a date and time like 2026-09-29 09:30 to book." };
 
   const event = {
     summary,
-    start: { dateTime: start, timeZone: tz },
-    end: { dateTime: endISO, timeZone: tz },
+    start: { dateTime: window.start, timeZone: tz },
+    end: { dateTime: window.end, timeZone: tz },
     attendees: [],
   };
 
@@ -254,7 +264,7 @@ export async function bookOrMove(req) {
 
   const record = addEvent({
     summary,
-    when: start,
+    when: window.local,
     gcalId: created.data.id,
     calendarId: calId,
     attendees: [],

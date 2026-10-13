@@ -3,6 +3,7 @@ import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./event
 import { getTodaySummary as gcalToday, freeBusy as gcalFreeBusy, bookOrMove as gcalBookOrMove } from "./google-calendar.js";
 import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars } from "./google-calendar-oauth.js";
 import { zonedToday, zonedWeekdayName } from "./zoned-time.js";
+import { markProviderOk, markProviderFail } from "./provider-health.js";
 
 function todayISO() {
   return zonedToday(cfg.bossTimezone ?? "America/New_York");
@@ -77,39 +78,115 @@ function stubBookOrMove(req) {
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
 const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && cfg.googleOauthRefreshToken && cfg.bossCalendarEmail);
 
+/**
+ * Real events the assistant booked, read straight from the store. Independent
+ * of any calendar provider, so they stay visible even when the provider is
+ * down — unlike the synthetic `buildDayItems` schedule, they actually happened.
+ */
+function localOnlyItems(date) {
+  return eventsOn(date)
+    .map((e) => ({
+      time: String(e.when ?? "").slice(11, 16),
+      title: e.summary,
+      attendees: e.attendees ?? [],
+      done: Boolean(e.done),
+      calendar: "Booked via assistant",
+      calendarId: "local",
+    }))
+    .filter((i) => i.time);
+}
+
+/**
+ * A provider is configured but every attempt failed.
+ *
+ * Falling through to `stubToday` here would be the calendar twin of the email
+ * bug: the boss would open their day and see "Standup — Q3 ops / Vendor review
+ * — Acme Cloud" as though they were real meetings. So we show the events that
+ * genuinely exist (locally booked) and say plainly that the live calendar
+ * could not be read.
+ */
+function degradedDay(req, reason) {
+  const tz = cfg.bossTimezone ?? "America/New_York";
+  const date = req?.date ?? todayISO();
+  const name = zonedWeekdayName(date, tz);
+  return {
+    id: "day",
+    date,
+    day: name,
+    title: `${name} — ${date}`,
+    items: localOnlyItems(date),
+    calendars: [],
+    degraded: true,
+    error: reason,
+  };
+}
+
+function degradedFreeBusy(req, reason) {
+  const date = req?.date ?? todayISO();
+  return { date, free: [], busy: [], degraded: true, error: reason };
+}
+
+/** Try each configured provider in order; return the first success or why all failed. */
+async function viaProviders(real, stub, req) {
+  const attempts = [];
+  if (useServiceAccount()) attempts.push(["service-account", real.sa]);
+  if (useOAuth2()) attempts.push(["oauth2", real.oauth]);
+
+  let lastError = null;
+  for (const [name, fn] of attempts) {
+    try {
+      const out = await fn(req);
+      markProviderOk("calendar");
+      return out;
+    } catch (e) {
+      lastError = e;
+      console.warn(`[calendar] ${name} failed: ${e.message}`);
+      markProviderFail("calendar", e);
+    }
+  }
+  // Nothing configured = deliberate demo mode, so the synthetic day is correct.
+  if (attempts.length === 0) return stub(req);
+  return lastError;
+}
+
 export async function listCalendars() {
   if (useOAuth2()) {
-    try { return await oauthListCalendars(); } catch (e) { console.warn("[calendar] OAuth2 list failed:", e.message); }
+    try {
+      const list = await oauthListCalendars();
+      markProviderOk("calendar");
+      return list;
+    } catch (e) {
+      console.warn("[calendar] OAuth2 list failed:", e.message);
+      markProviderFail("calendar", e);
+    }
   }
   return [];
 }
 
 export async function getTodaySummary(req) {
-  if (useServiceAccount()) {
-    try { return await gcalToday(req); } catch (e) { console.warn("[calendar] Service Account failed, falling back:", e.message); }
-  }
-  if (useOAuth2()) {
-    try { return await oauthToday(req); } catch (e) { console.warn("[calendar] OAuth2 failed, falling back to stub:", e.message); }
-  }
-  return stubToday(req);
+  const result = await viaProviders({ sa: gcalToday, oauth: oauthToday }, stubToday, req);
+  return result instanceof Error ? degradedDay(req, result.message) : result;
 }
 
 export async function freeBusy(req) {
-  if (useServiceAccount()) {
-    try { return await gcalFreeBusy(req); } catch (e) { console.warn("[calendar] Service Account failed, falling back:", e.message); }
-  }
-  if (useOAuth2()) {
-    try { return await oauthFreeBusy(req); } catch (e) { console.warn("[calendar] OAuth2 failed, falling back to stub:", e.message); }
-  }
-  return stubFreeBusy(req);
+  const result = await viaProviders({ sa: gcalFreeBusy, oauth: oauthFreeBusy }, stubFreeBusy, req);
+  return result instanceof Error ? degradedFreeBusy(req, result.message) : result;
 }
 
 export async function bookOrMove(req) {
-  if (useServiceAccount()) {
-    try { return await gcalBookOrMove(req); } catch (e) { console.warn("[calendar] Service Account failed, falling back:", e.message); }
-  }
-  if (useOAuth2()) {
-    try { return await oauthBookOrMove(req); } catch (e) { console.warn("[calendar] OAuth2 failed, falling back to stub:", e.message); }
+  if (useServiceAccount() || useOAuth2()) {
+    try {
+      const out = useServiceAccount() ? await gcalBookOrMove(req) : await oauthBookOrMove(req);
+      markProviderOk("calendar");
+      return out;
+    } catch (e) {
+      // Do NOT fall back to the store here: the boss asked the assistant to put
+      // something on their real calendar. Silently "succeeding" locally would
+      // mean no invite is sent and no one else sees it.
+      console.warn("[calendar] book/move failed:", e.message);
+      markProviderFail("calendar", e);
+      return { ok: false, action: req?.action ?? "book", error: `Calendar write failed: ${e.message}` };
+    }
   }
   return stubBookOrMove(req);
 }

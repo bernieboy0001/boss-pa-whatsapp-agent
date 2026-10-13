@@ -753,7 +753,7 @@ function initVoice() {
 function renderToday(data) {
   if (!data) return;
   const summary = data.summary || data;
-  const freeBusy = data.freeBusy || { free: ["09:00", "11:00", "14:00", "15:00", "18:00"], busy: [] };
+  const freeBusy = data.freeBusy || { free: [], busy: [] };
 
   const todayDateEl = $("#todayDate");
   if (todayDateEl && summary.day && summary.date) {
@@ -764,28 +764,47 @@ function renderToday(data) {
   const scheduleList = $("#todaySchedule");
   if (scheduleList) {
     if (!items.length) {
-      scheduleList.innerHTML = `<li class="schedule-item"><span class="schedule-title" style="color:var(--dim)">No scheduled meetings for today. Clear runway.</span></li>`;
+      // Don't call an unread calendar "clear" — only say the runway is clear
+      // when we actually read the calendar and found nothing.
+      scheduleList.innerHTML = summary.degraded
+        ? `<li class="schedule-item"><span class="schedule-title" style="color:var(--dim)">No assistant-booked events today.</span></li>`
+        : `<li class="schedule-item"><span class="schedule-title" style="color:var(--dim)">No scheduled meetings for today. Clear runway.</span></li>`;
     } else {
       scheduleList.innerHTML = items.map((it, i) => `
         <li class="schedule-item ${it.done ? "done" : ""} ${i === 0 ? "time-blue" : ""}">
           <span class="schedule-time">${escapeHtml(it.time)}</span>
           <span class="schedule-title">${escapeHtml(it.title)}</span>
+          ${it.calendar ? `<span class="cal-source">${escapeHtml(it.calendar)}</span>` : ""}
           ${it.attendees?.length ? `<span class="attendees">${it.attendees.map(escapeHtml).join(", ")}</span>` : ""}
         </li>
       `).join("");
     }
   }
 
+  const banner = $("#calBanner");
+  if (banner) {
+    if (summary.degraded) {
+      banner.hidden = false;
+      banner.textContent = `⚠ Couldn't read your live calendar — ${summary.error || "provider unavailable"}. Showing only events booked through this assistant.`;
+    } else {
+      banner.hidden = true;
+      banner.textContent = "";
+    }
+  }
+
   // Update Free / Busy stats
+  const unavailable = Boolean(summary.degraded || freeBusy.degraded);
   const totalHours = 11;
-  const freeHours = Array.isArray(freeBusy.free) ? freeBusy.free.length : 5;
-  const busyHours = Array.isArray(freeBusy.busy) ? freeBusy.busy.length : 3;
+  const freeHours = Array.isArray(freeBusy.free) ? freeBusy.free.length : 0;
+  const busyHours = Array.isArray(freeBusy.busy) ? freeBusy.busy.length : 0;
   const freePct = Math.min(Math.round((freeHours / totalHours) * 100), 100);
   const busyPct = Math.min(Math.round((busyHours / totalHours) * 100), 100);
 
   const fbEl = $("#freeBusy");
   if (fbEl) {
-    fbEl.innerHTML = `
+    fbEl.innerHTML = unavailable
+      ? `<div class="fb-row fb-busy"><span>Availability</span><span>Unavailable — calendar not readable</span></div>`
+      : `
       <div class="fb-row fb-free">
         <span>Available Runway</span>
         <span>${freeHours}h (${freePct}%)</span>
@@ -803,20 +822,23 @@ function renderToday(data) {
     `;
   }
 
-  // Update Hero open time
+  // Update Hero open time. Never invent minutes we didn't measure.
   const openTimeVal = $("#openTimeVal");
   const openTimeFill = $("#openTimeFill");
   const openTimeSub = $("#openTimeSub");
-  if (openTimeVal) openTimeVal.innerHTML = `${freeHours}<span>h</span> 20<span>m</span>`;
-  if (openTimeFill) openTimeFill.style.width = `${freePct}%`;
-  if (openTimeSub) openTimeSub.textContent = `${freePct}% of your day is flexible`;
+  if (openTimeVal) openTimeVal.innerHTML = unavailable ? "—" : `${freeHours}<span>h</span>`;
+  if (openTimeFill) openTimeFill.style.width = unavailable ? "0%" : `${freePct}%`;
+  if (openTimeSub) openTimeSub.textContent = unavailable ? "Calendar unavailable" : `${freePct}% of your day is flexible`;
 }
 
 function renderWeek(days) {
   const grid = $("#weekGrid");
   if (!grid || !Array.isArray(days)) return;
 
-  grid.innerHTML = days.map(d => `
+  const anyDegraded = days.some(d => d.degraded);
+  grid.innerHTML = (anyDegraded
+    ? `<div class="cal-banner">⚠ Calendar not fully readable — some days show only assistant-booked events.</div>`
+    : "") + days.map(d => `
     <div class="week-day">
       <div class="week-day-header">${fmtDate(d.date)}</div>
       <ul class="week-schedule">
@@ -824,7 +846,7 @@ function renderWeek(days) {
           <li class="${it.done ? "done" : ""}">
             <strong style="color:var(--primary-light)">${escapeHtml(it.time)}</strong> ${escapeHtml(it.title)}
           </li>
-        `).join("") : '<li style="color:var(--dim)">Open day</li>'}
+        `).join("") : `<li style="color:var(--dim)">${d.degraded ? "Unavailable" : "Open day"}</li>`}
       </ul>
     </div>
   `).join("");
