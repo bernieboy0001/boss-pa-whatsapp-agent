@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { cfg, brainConfigured } from "./config.js";
 import { handleMessage } from "./agent.js";
 import { normalizeInbound, sendText, verifyWebhook } from "./photon.js";
@@ -16,6 +17,7 @@ import { searchLaw, findTemplates } from "./tools/legal.js";
 import { ensureHydrated, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
 import { zonedDateStr, zonedToday, addDays } from "./tools/zoned-time.js";
 import { getProviderHealth } from "./tools/provider-health.js";
+import { generateAuthUrl, exchangeCodeForTokens, setStoredRefreshToken } from "./tools/oauth2-client.js";
 
 /**
  * Phase 2: the always-on webhook the WhatsApp channel (Photon/Spectrum) calls.
@@ -290,6 +292,115 @@ async function photonWebhook(req, res) {
 // single-segment alias is registered too (see the rewrite in vercel.json).
 app.post("/webhook/photon", photonWebhook);
 app.post("/api/webhook-photon", photonWebhook);
+
+// --- Google OAuth re-authorization ---
+//
+// The refresh token is the single point of failure for calendar + mail: when
+// Google expires or revokes it (`invalid_grant`) both go dark, and a serverless
+// deployment cannot rewrite its own env. These routes let an operator
+// re-authorise from the deployment itself instead of hand-rolling a token in
+// the OAuth Playground. Gated by OAUTH_SETUP_KEY; the OAuth `state` is
+// generated and verified server-side (CSRF).
+
+const OAUTH_SETUP_KEY = process.env.OAUTH_SETUP_KEY || "";
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+// The OAuth `state` is signed, not stored: a serverless deployment may answer
+// the callback on a different instance (and region) than the start request, so
+// an in-memory map would falsely reject every round-trip. HMAC over a
+// timestamp proves the callback came from a start we issued and bounds its age.
+function signOAuthState(now = Date.now()) {
+  const mac = createHmac("sha256", OAUTH_SETUP_KEY).update(String(now)).digest("hex");
+  return `${now}.${mac}`;
+}
+
+function verifyOAuthState(state) {
+  if (!state || !String(state).includes(".")) return false;
+  const [tsStr, mac] = String(state).split(".");
+  const ts = Number(tsStr);
+  if (!Number.isFinite(ts) || Date.now() - ts > OAUTH_STATE_TTL_MS) return false;
+  const expected = createHmac("sha256", OAUTH_SETUP_KEY).update(tsStr).digest("hex");
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function oauthPage(title, body) {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<body style="font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;max-width:640px;margin:8vh auto;padding:0 20px;color:#111">
+<h1 style="font-size:20px;margin:0 0 12px">${escapeHtml(title)}</h1>${body}</body>`;
+}
+
+function oauthStart(req, res) {
+  if (!OAUTH_SETUP_KEY) {
+    return res.status(503).type("html").send(oauthPage(
+      "Re-authorization disabled",
+      "<p>Set <code>OAUTH_SETUP_KEY</code> in the environment to enable this flow.</p>"
+    ));
+  }
+  if (req.query.key !== OAUTH_SETUP_KEY) {
+    return res.status(403).type("html").send(oauthPage("Forbidden", "<p>Invalid setup key.</p>"));
+  }
+  try {
+    const state = signOAuthState();
+    res.redirect(generateAuthUrl(state));
+  } catch (e) {
+    res.status(503).type("html").send(oauthPage("OAuth not configured", `<p>${escapeHtml(e.message)}</p>`));
+  }
+}
+
+async function oauthCallback(req, res) {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.status(400).type("html").send(oauthPage("Authorization failed", `<p>${escapeHtml(String(error))}</p>`));
+  }
+  if (!verifyOAuthState(state)) {
+    return res.status(400).type("html").send(oauthPage("Invalid state", "<p>Start again from <code>/oauth-start</code>.</p>"));
+  }
+  if (!code) {
+    return res.status(400).type("html").send(oauthPage("Missing code", "<p>Google returned no authorization code.</p>"));
+  }
+  try {
+    const tokens = await exchangeCodeForTokens(code);
+    if (!tokens.refresh_token) {
+      return res.type("html").send(oauthPage(
+        "No refresh token returned",
+        "<p>Google only issues one at consent. Revoke prior access at " +
+        "<a href='https://myaccount.google.com/permissions'>myaccount.google.com/permissions</a> " +
+        "then retry <code>/oauth-start</code>.</p>"
+      ));
+    }
+    setStoredRefreshToken(tokens.refresh_token);
+    await flush();
+    const durable = storeKind === "kv";
+    console.log(`[oauth] refresh token rotated (storeKind=${storeKind})`);
+    res.type("html").send(oauthPage("Re-authorized", `
+      <p>Calendar and mail access restored.</p>
+      <p>${durable
+        ? "The new token was saved durably — no redeploy needed."
+        : "<strong>Storage is in-memory on this instance</strong>, so also set a Vercel env var and redeploy:<br>" +
+          `<code style="display:block;word-break:break-all;background:#f4f4f4;padding:8px;margin:8px 0">GOOGLE_OAUTH_REFRESH_TOKEN=${escapeHtml(tokens.refresh_token)}</code>`}</p>
+      <p><a href="/">Back to the dashboard</a></p>
+    `));
+  } catch (e) {
+    console.error("[oauth] token exchange failed:", e.message);
+    res.status(500).type("html").send(oauthPage("Token exchange failed", `<p>${escapeHtml(e.message)}</p>`));
+  }
+}
+
+// Google redirects to the public `/oauth2callback`; each public path needs a
+// vercel.json rewrite to the single-segment /api/ alias it is registered under
+// here (Vercel's catch-all only covers one path segment). The /api/ paths are
+// also probed by the smoke suite, which talks to the Express app directly.
+app.get("/oauth-start", oauthStart);
+app.get("/api/oauth-start", oauthStart);
+app.get("/oauth2callback", oauthCallback);
+app.get("/api/oauth2callback", oauthCallback);
 
 // Unknown API routes must 404 as JSON, never fall through to the SPA shell.
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));

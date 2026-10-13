@@ -1,6 +1,11 @@
 ﻿import http from "node:http";
-import handler from "../api/[...path].js";
 import { zonedISOString } from "../src/tools/zoned-time.js";
+
+// OAUTH_SETUP_KEY is read at module load, so pin it before importing the
+// handler; keep whatever the real environment provides so the probe key matches.
+const SETUP_KEY = (process.env.OAUTH_SETUP_KEY ||= "smoke-setup-key");
+
+const handler = (await import("../api/[...path].js")).default;
 
 // Minimal adapter: expose the bundled Vercel handler over real HTTP so we can
 // exercise Express routing exactly as the platform will.
@@ -30,6 +35,12 @@ const ROUTES = [
   // is a legitimate 502 here, so both 200 and 502 count as "route works".
   ["GET", "/api/mail?max=3", [200, 502]],
   ["GET", "/api/mail-stats", [200, 500]],
+  // OAuth re-authorization. Without OAUTH_SETUP_KEY the start route is closed
+  // (503); with a key but no/wrong ?key= it is 403. A callback with no valid
+  // state is rejected (400) — never a SPA shell or a 500.
+  ["GET", "/api/oauth-start", [403, 503]],
+  ["GET", "/api/oauth2callback", 400],
+  ["GET", "/oauth2callback", 400],
 ];
 
 let failures = 0;
@@ -172,6 +183,31 @@ try {
 } catch (e) {
   failures++;
   console.log(`FAIL /api/day honesty threw: ${e.message}`);
+}
+
+// OAuth re-authorization must work across serverless instances, so the state is
+// HMAC-signed rather than kept in a per-instance map. Prove the round-trip
+// offline: start returns a 302 to Google carrying a state, that state verifies
+// on a later request (reaches "Missing code", not "Invalid state"), and a forged
+// state is rejected.
+try {
+  const start = await fetch(`http://127.0.0.1:${port}/api/oauth-start?key=${encodeURIComponent(SETUP_KEY)}`, { redirect: "manual" });
+  const loc = start.headers.get("location") || "";
+  const state = loc ? new URL(loc).searchParams.get("state") : null;
+  const okRedirect = start.status === 302 && loc.startsWith("https://accounts.google.com/") && Boolean(state);
+
+  const verified = await fetch(`http://127.0.0.1:${port}/api/oauth2callback?state=${encodeURIComponent(state ?? "")}`);
+  const okVerified = verified.status === 400 && /Missing code/.test(await verified.text());
+
+  const forged = await fetch(`http://127.0.0.1:${port}/api/oauth2callback?state=1.deadbeef`);
+  const okForged = forged.status === 400 && /Invalid state/.test(await forged.text());
+
+  const ok = okRedirect && okVerified && okForged;
+  if (!ok) failures++;
+  console.log(`${ok ? "PASS" : "FAIL"} OAuth start→state round-trip (302=${start.status}, verified=${okVerified}, forgedRejected=${okForged})`);
+} catch (e) {
+  failures++;
+  console.log(`FAIL OAuth round-trip threw: ${e.message}`);
 }
 
 server.close();

@@ -3,6 +3,7 @@ import { inboxSummary as gmailInbox, draftReply as gmailDraft, sendEmail as gmai
 import { inboxSummary as oauthInbox, draftReply as oauthDraft, sendEmail as oauthSend } from "./google-gmail-oauth.js";
 import { readMailbox, mailboxStats } from "./mail-reader.js";
 import { markProviderOk, markProviderFail } from "./provider-health.js";
+import { currentRefreshToken } from "./oauth2-client.js";
 
 /**
  * Demo fixtures, used ONLY when no mail provider is configured at all.
@@ -44,7 +45,7 @@ async function stubSend(req) {
 }
 
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
-const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && cfg.googleOauthRefreshToken && cfg.bossCalendarEmail);
+const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && cfg.bossCalendarEmail);
 const anyProvider = () => useServiceAccount() || useOAuth2();
 
 /**

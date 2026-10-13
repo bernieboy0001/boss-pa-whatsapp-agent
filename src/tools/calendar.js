@@ -4,6 +4,7 @@ import { getTodaySummary as gcalToday, freeBusy as gcalFreeBusy, bookOrMove as g
 import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars } from "./google-calendar-oauth.js";
 import { zonedToday, zonedWeekdayName } from "./zoned-time.js";
 import { markProviderOk, markProviderFail } from "./provider-health.js";
+import { currentRefreshToken } from "./oauth2-client.js";
 
 function todayISO() {
   return zonedToday(cfg.bossTimezone ?? "America/New_York");
@@ -76,7 +77,7 @@ function stubBookOrMove(req) {
 }
 
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
-const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && cfg.googleOauthRefreshToken && cfg.bossCalendarEmail);
+const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && cfg.bossCalendarEmail);
 
 /**
  * Real events the assistant booked, read straight from the store. Independent
