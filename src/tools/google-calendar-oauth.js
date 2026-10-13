@@ -2,7 +2,8 @@ import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getOAuth2Client } from "./oauth2-client.js";
-import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName, zonedISOString } from "./zoned-time.js";
+import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName, zonedISOString, addDays } from "./zoned-time.js";
+import { availabilityFromItems, minutesOf } from "./availability.js";
 
 let calendarClient = null;
 
@@ -14,7 +15,7 @@ function getCalendarClient() {
 }
 
 function bossZone() {
-  return cfg.bossTimezone ?? "America/New_York";
+  return cfg.bossTimezone ?? "Africa/Lagos";
 }
 
 function todayISO() {
@@ -128,20 +129,30 @@ export async function getTodaySummary(req) {
     if (!raw) continue;
 
     if (dateTime) {
-      const eventTz = e.start?.timeZone || tz;
+      // Always render in the boss's zone, not the event's own: the boss reads
+      // their day in GMT+1 regardless of where a meeting was authored.
       const instant = new Date(dateTime);
       // A timed event can fall on a different local date than the day queried
       // (an evening event already tomorrow in the boss's zone).
-      if (zonedDateStr(instant, eventTz) !== date) continue;
+      if (zonedDateStr(instant, tz) !== date) continue;
+      const startMin = minutesOf(zonedTimeStr(instant, tz)) ?? 0;
+      const endInstant = e.end?.dateTime ? new Date(e.end.dateTime) : null;
+      let endMin = endInstant ? minutesOf(zonedTimeStr(endInstant, tz)) : null;
+      // No end, or an end that doesn't parse/advance: assume a 1-hour meeting.
+      if (endMin == null || endMin <= startMin) endMin = startMin + 60;
       items.push({
-        time: zonedTimeStr(instant, eventTz),
-        sortKey: zonedTimeStr(instant, eventTz),
+        time: zonedTimeStr(instant, tz),
+        sortKey: zonedTimeStr(instant, tz),
+        startMin,
+        endMin,
+        allDay: false,
         title: e.summary ?? "(no title)",
         location: e.location ?? "",
         attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
         done: false,
         calendar: c.summary,
         calendarId: c.id,
+        reference: c.reference,
         gcalId: e.id,
       });
     } else {
@@ -150,27 +161,39 @@ export async function getTodaySummary(req) {
       items.push({
         time: "All day",
         sortKey: "00:00",
+        startMin: 0,
+        endMin: 0,
+        allDay: true,
         title: e.summary ?? "(no title)",
         location: e.location ?? "",
         attendees: [],
         done: false,
         calendar: c.summary,
         calendarId: c.id,
+        reference: c.reference,
         gcalId: e.id,
       });
     }
   }
 
-  const stored = eventsOn(date).map((e) => ({
-    time: String(e.when ?? "").slice(11, 16),
-    sortKey: String(e.when ?? "").slice(11, 16),
-    title: e.summary,
-    location: "",
-    attendees: e.attendees ?? [],
-    done: Boolean(e.done),
-    calendar: "Booked via assistant",
-    calendarId: "local",
-  }));
+  const stored = eventsOn(date).map((e) => {
+    const time = String(e.when ?? "").slice(11, 16);
+    const startMin = minutesOf(time) ?? 0;
+    return {
+      time,
+      sortKey: time,
+      startMin,
+      endMin: startMin + 60,
+      allDay: false,
+      title: e.summary,
+      location: "",
+      attendees: e.attendees ?? [],
+      done: Boolean(e.done),
+      calendar: "Booked via assistant",
+      calendarId: "local",
+      reference: false,
+    };
+  });
 
   const all = [...items, ...stored]
     .filter((i) => i.time)
@@ -193,15 +216,115 @@ export async function getTodaySummary(req) {
   };
 }
 
-const OPEN_HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"];
-
 export async function freeBusy(req) {
   const date = req?.date ?? todayISO();
   const summary = await getTodaySummary({ date });
-  const taken = new Set(summary.items.map((i) => i.time.slice(0, 2)));
-  const free = OPEN_HOURS.filter((h) => !taken.has(h.slice(0, 2))).slice(0, 6);
-  const busy = summary.items.map((i) => `${i.time} ${i.title}`);
-  return { date, free, busy };
+  return { date, ...availabilityFromItems(summary.items) };
+}
+
+/**
+ * Every event across `days` calendar days starting at `start`, from every
+ * calendar, batched as one `events.list` per calendar — not one per day. The
+ * old week view invoked `getTodaySummary` seven times (7 × N calendars of round
+ * trips) and could only ever reflect the default single-calendar read.
+ */
+export async function getRangeSummary({ start, days = 7 } = {}) {
+  const tz = bossZone();
+  const first = start ?? todayISO();
+  const { start: timeMin } = zonedDayBounds(first, tz);
+  const { end: timeMax } = zonedDayBounds(addDays(first, days - 1), tz);
+
+  const cal = getCalendarClient();
+  const calendars = await readableCalendars();
+  const warnings = [];
+
+  const perCalendar = await Promise.all(
+    calendars.map(async (c) => {
+      try {
+        return (await listWindow(cal, c.id, timeMin, timeMax)).map((e) => ({ e, c }));
+      } catch (err) {
+        console.warn(`[calendar] week: skipping ${c.summary} (${c.id}): ${err.message}`);
+        warnings.push(`${c.summary}: ${err.message}`);
+        return [];
+      }
+    }),
+  );
+
+  const byDate = new Map();
+  for (let i = 0; i < days; i += 1) byDate.set(addDays(first, i), []);
+
+  for (const { e, c } of perCalendar.flat()) {
+    const dateTime = e.start?.dateTime;
+    const allDayDate = e.start?.date;
+    if (dateTime) {
+      // Render (and bucket) in the boss's zone so the week reads in GMT+1.
+      const instant = new Date(dateTime);
+      const date = zonedDateStr(instant, tz);
+      if (!byDate.has(date)) continue;
+      byDate.get(date).push({
+        time: zonedTimeStr(instant, tz),
+        sortKey: zonedTimeStr(instant, tz),
+        title: e.summary ?? "(no title)",
+        location: e.location ?? "",
+        attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
+        done: false,
+        allDay: false,
+        calendar: c.summary,
+        calendarId: c.id,
+        reference: c.reference,
+        gcalId: e.id,
+      });
+    } else if (allDayDate && byDate.has(allDayDate)) {
+      byDate.get(allDayDate).push({
+        time: "All day",
+        sortKey: "00:00",
+        title: e.summary ?? "(no title)",
+        location: e.location ?? "",
+        attendees: [],
+        done: false,
+        allDay: true,
+        calendar: c.summary,
+        calendarId: c.id,
+        reference: c.reference,
+        gcalId: e.id,
+      });
+    }
+  }
+
+  for (const [date, items] of byDate) {
+    for (const e of eventsOn(date)) {
+      const time = String(e.when ?? "").slice(11, 16);
+      items.push({
+        time,
+        sortKey: time,
+        title: e.summary,
+        location: "",
+        attendees: e.attendees ?? [],
+        done: Boolean(e.done),
+        allDay: false,
+        calendar: "Booked via assistant",
+        calendarId: "local",
+        reference: false,
+      });
+    }
+    items.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }
+
+  const out = [];
+  for (const [date, items] of byDate) {
+    out.push({
+      date,
+      day: zonedWeekdayName(date, tz),
+      summary: items.map(({ sortKey, ...rest }) => rest),
+    });
+  }
+
+  return {
+    start: first,
+    days: out,
+    calendars: calendars.map((c) => ({ id: c.id, summary: c.summary, primary: c.primary, reference: c.reference })),
+    ...(warnings.length ? { warnings } : {}),
+  };
 }
 
 export async function bookOrMove(req) {

@@ -792,13 +792,13 @@ function renderToday(data) {
     }
   }
 
-  // Update Free / Busy stats
-  const unavailable = Boolean(summary.degraded || freeBusy.degraded);
-  const totalHours = 11;
-  const freeHours = Array.isArray(freeBusy.free) ? freeBusy.free.length : 0;
-  const busyHours = Array.isArray(freeBusy.busy) ? freeBusy.busy.length : 0;
-  const freePct = Math.min(Math.round((freeHours / totalHours) * 100), 100);
-  const busyPct = Math.min(Math.round((busyHours / totalHours) * 100), 100);
+  // Update Free / Busy stats — measured from real event start/end, not a
+  // slot count. Missing/degraded numbers render as "unavailable", never 0%.
+  const unavailable = Boolean(summary.degraded || freeBusy.degraded || freeBusy.freePct == null);
+  const freeMinutes = Number(freeBusy.freeMinutes ?? 0);
+  const busyMinutes = Number(freeBusy.busyMinutes ?? 0);
+  const freePct = Math.max(0, Math.min(100, Number(freeBusy.freePct ?? 0)));
+  const busyPct = Math.max(0, Math.min(100, Number(freeBusy.busyPct ?? 0)));
 
   const fbEl = $("#freeBusy");
   if (fbEl) {
@@ -807,14 +807,14 @@ function renderToday(data) {
       : `
       <div class="fb-row fb-free">
         <span>Available Runway</span>
-        <span>${freeHours}h (${freePct}%)</span>
+        <span>${fmtDuration(freeMinutes)} (${freePct}%)</span>
       </div>
       <div class="fb-bar">
         <div class="fb-fill stat-fill" style="width:${freePct}%;background:linear-gradient(90deg,var(--green),var(--accent-cyan))"></div>
       </div>
       <div class="fb-row fb-busy">
         <span>Committed Focus</span>
-        <span>${busyHours}h (${busyPct}%)</span>
+        <span>${fmtDuration(busyMinutes)} (${busyPct}%)</span>
       </div>
       <div class="fb-bar">
         <div class="fb-fill stat-fill" style="width:${busyPct}%;background:linear-gradient(90deg,var(--primary),var(--primary-light))"></div>
@@ -826,9 +826,30 @@ function renderToday(data) {
   const openTimeVal = $("#openTimeVal");
   const openTimeFill = $("#openTimeFill");
   const openTimeSub = $("#openTimeSub");
-  if (openTimeVal) openTimeVal.innerHTML = unavailable ? "—" : `${freeHours}<span>h</span>`;
+  if (openTimeVal) openTimeVal.innerHTML = unavailable ? "—" : fmtDurationHtml(freeMinutes);
   if (openTimeFill) openTimeFill.style.width = unavailable ? "0%" : `${freePct}%`;
-  if (openTimeSub) openTimeSub.textContent = unavailable ? "Calendar unavailable" : `${freePct}% of your day is flexible`;
+  if (openTimeSub) openTimeSub.textContent = unavailable ? "Calendar unavailable" : `${freePct}% of your workday is open`;
+}
+
+/** 320 → "5h 20m". */
+function fmtDuration(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  if (h && r) return `${h}h ${r}m`;
+  if (h) return `${h}h`;
+  return `${r}m`;
+}
+
+/** 320 → "5<span>h</span> 20<span>m</span>" for the hero's styled units. */
+function fmtDurationHtml(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  const parts = [];
+  if (h) parts.push(`${h}<span>h</span>`);
+  if (r || !h) parts.push(`${r}<span>m</span>`);
+  return parts.join(" ");
 }
 
 function renderWeek(days) {
@@ -845,6 +866,7 @@ function renderWeek(days) {
         ${(d.summary || []).length ? d.summary.map(it => `
           <li class="${it.done ? "done" : ""}">
             <strong style="color:var(--primary-light)">${escapeHtml(it.time)}</strong> ${escapeHtml(it.title)}
+            ${it.calendar ? `<span class="cal-source">${escapeHtml(it.calendar)}</span>` : ""}
           </li>
         `).join("") : `<li style="color:var(--dim)">${d.degraded ? "Unavailable" : "Open day"}</li>`}
       </ul>

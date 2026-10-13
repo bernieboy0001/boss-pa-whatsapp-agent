@@ -59,7 +59,7 @@ export const cfg = {
   // --- Tools: Google Workspace (stubbed until §0 fork is confirmed) ---
   saKeyPath: process.env.GOOGLE_SA_KEY_PATH ?? "",
   bossCalendarEmail: process.env.BOSS_CALENDAR_EMAIL ?? "",
-  bossTimezone: process.env.BOSS_TIMEZONE ?? "America/New_York",
+  bossTimezone: process.env.BOSS_TIMEZONE ?? "Africa/Lagos",
   // Where new events are written. Reads span every calendar the token can see;
   // writes always target this one. Defaults to the token owner's primary.
   calendarWriteId: process.env.CALENDAR_WRITE_ID ?? "",

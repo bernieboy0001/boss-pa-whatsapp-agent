@@ -1,7 +1,8 @@
 import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
-import { zonedISOString } from "./zoned-time.js";
+import { zonedISOString, zonedTimeStr, zonedToday } from "./zoned-time.js";
+import { availabilityFromItems, minutesOf } from "./availability.js";
 
 const SCOPES = ["https://www.googleapis.com/auth/calendar"];
 
@@ -25,8 +26,7 @@ function getCalendarClient() {
 }
 
 function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
 }
 
 /**
@@ -46,18 +46,10 @@ function eventWindow(when, tz, minutes = 60) {
   };
 }
 
-function fromISO(iso) {
-  if (!iso) return { date: "", time: "" };
-  const d = new Date(iso);
-  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return { date, time };
-}
-
 export async function getTodaySummary(req) {
   const date = req?.date ?? todayISO();
   const cal = getCalendarClient();
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const tz = cfg.bossTimezone ?? "Africa/Lagos";
 
   const start = `${date}T00:00:00`;
   const end = `${date}T23:59:59`;
@@ -72,22 +64,36 @@ export async function getTodaySummary(req) {
   });
 
   const items = (res.data.items ?? []).map((e) => {
-    const startTime = e.start?.dateTime ?? e.start?.date ?? "";
-    const { time } = fromISO(startTime);
+    const startTime = e.start?.dateTime;
+    if (!startTime) {
+      return { time: "All day", startMin: 0, endMin: 0, allDay: true, title: e.summary ?? "(no title)", attendees: [], done: false };
+    }
+    const startMin = minutesOf(zonedTimeStr(new Date(startTime), tz)) ?? 0;
+    const endMin = e.end?.dateTime ? minutesOf(zonedTimeStr(new Date(e.end.dateTime), tz)) ?? startMin + 60 : startMin + 60;
     return {
-      time: time || "All day",
+      time: zonedTimeStr(new Date(startTime), tz),
+      startMin,
+      endMin: endMin > startMin ? endMin : startMin + 60,
+      allDay: false,
       title: e.summary ?? "(no title)",
       attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
       done: false,
     };
   });
 
-  const stored = eventsOn(date).map((e) => ({
-    time: String(e.when ?? "").slice(11, 16),
-    title: e.summary,
-    attendees: e.attendees ?? [],
-    done: Boolean(e.done),
-  }));
+  const stored = eventsOn(date).map((e) => {
+    const time = String(e.when ?? "").slice(11, 16);
+    const startMin = minutesOf(time) ?? 0;
+    return {
+      time,
+      startMin,
+      endMin: startMin + 60,
+      allDay: false,
+      title: e.summary,
+      attendees: e.attendees ?? [],
+      done: Boolean(e.done),
+    };
+  });
 
   const all = [...items, ...stored]
     .filter((i) => i.time)
@@ -105,21 +111,16 @@ export async function getTodaySummary(req) {
   };
 }
 
-const OPEN_HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"];
-
 export async function freeBusy(req) {
   const date = req?.date ?? todayISO();
   const summary = await getTodaySummary({ date });
-  const taken = new Set(summary.items.map((i) => i.time.slice(0, 2)));
-  const free = OPEN_HOURS.filter((h) => !taken.has(h.slice(0, 2))).slice(0, 6);
-  const busy = summary.items.map((i) => `${i.time} ${i.title}`);
-  return { date, free, busy };
+  return { date, ...availabilityFromItems(summary.items) };
 }
 
 export async function bookOrMove(req) {
   const { action, summary, when } = req ?? {};
   const cal = getCalendarClient();
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const tz = cfg.bossTimezone ?? "Africa/Lagos";
 
   if (action === "cancel") {
     const target = summary

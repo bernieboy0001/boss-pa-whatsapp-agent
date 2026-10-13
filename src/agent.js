@@ -1,10 +1,11 @@
 import { getPrefs } from "./prefs.js";
 import { cfg } from "./config.js";
 import { searchFlights, printFlights, bookFlight } from "./tools/flights.js";
-import { getTodaySummary, freeBusy, bookOrMove } from "./tools/calendar.js";
-import { inboxSummary, draftReply, readMail } from "./tools/email.js";
+import { getTodaySummary, freeBusy, bookOrMove, getWeekSummary } from "./tools/calendar.js";
+import { draftReply, readMail, sendEmail } from "./tools/email.js";
 import { addFlightToItinerary, viewItinerary } from "./tools/itinerary.js";
 import { zonedToday, addDays } from "./tools/zoned-time.js";
+import { humanDuration } from "./tools/availability.js";
 import { brainConfigured, brainReply } from "./brain.js";
 
 /**
@@ -41,15 +42,33 @@ export async function handleMessage(text, opts = {}) {
   // "book f1" can never reach the LLM and make up options out of thin air.
   if (session.pendingFlight && isConfirm(low)) return confirmFlight(low, session);
   if (session.pendingCalendar && isConfirm(low)) return confirmCalendar(low, session);
-  if ((session.pendingFlight || session.pendingCalendar) && isDecline(low)) return clearProposal(session);
+  if (session.pendingEmail && (isConfirm(low) || isSend(low))) return confirmEmail(session);
+  if ((session.pendingFlight || session.pendingCalendar || session.pendingEmail) && isDecline(low)) return clearProposal(session);
   if (isConfirm(low) || isDecline(low)) {
     return "Nothing pending to confirm or cancel right now. Try: \"flights JFK to LHR Friday\", \"schedule 1:1 with Sara Wed 4pm\", \"what's my day?\", or \"inbox?\".";
   }
 
   if (isFlightQuery(low)) return handleFlights(low, session);
-  if (isDayQuery(low)) return handleDay(low);
-  if (isEmailQuery(low)) return handleEmail(low);
   if (isItineraryQuery(low)) return handleItinerary();
+
+  // Conversational reads (day / week / inbox) go to the brain when it's
+  // configured, so the boss gets a written PA answer it can act on ("reply to
+  // Sarah saying..."). The deterministic handlers stay as the honest fallback.
+  if (brainConfigured() && (isDayQuery(low) || isWeekQuery(low) || isEmailQuery(low))) {
+    try {
+      const answer = await brainReply(t, { session });
+      if (answer) return answer;
+      degraded.reason = "empty-answer";
+    } catch (err) {
+      console.warn("[agent] brain failed:", err.message);
+      degraded.reason = "brain-error";
+      degraded.detail = err.message;
+    }
+  }
+
+  if (isDayQuery(low)) return handleDay(low);
+  if (isWeekQuery(low)) return handleWeek();
+  if (isEmailQuery(low)) return handleEmail(low, session);
   if (isCalendarMutation(low)) return proposeCalendar(low, session, t);
   if (!brainConfigured() && /remind\b/.test(low)) {
     return "Got it — I'll set a reminder. (Set LLM_API_KEY to let me handle freeform requests like this.)";
@@ -99,6 +118,10 @@ function isDayQuery(low) {
   );
 }
 
+function isWeekQuery(low) {
+  return /\bthis week\b|\bnext week\b|\bmy week\b|\bweek ahead\b|\bcoming week\b|\b7 days\b|\bseven days\b|\bweek\??$/.test(low);
+}
+
 function isEmailQuery(low) {
   return /email|inbox|\bmail\b/.test(low);
 }
@@ -109,6 +132,11 @@ function isItineraryQuery(low) {
 
 function isConfirm(low) {
   return /^(confirm|yes|yep|yeah|ok(?:ay)?|do it|book it|book\s+f\d+|go ahead)\b/.test(low);
+}
+
+/** Explicit "send it" for a staged email draft. */
+function isSend(low) {
+  return /^(send|send it|send that|send now|yes,? send|go ahead,? send|approve|sounds good|looks good|lgtm)\b/.test(low.trim());
 }
 
 /** A short, unambiguous "no" — used only to drop an existing pending proposal. */
@@ -239,11 +267,28 @@ async function handleDay(low) {
     if (fb.degraded || summary.degraded) {
       lines.push("Free/busy unavailable — calendar not readable right now.");
     } else {
-      lines.push(`Free: ${fb.free.join(", ")}`);
-      lines.push(`Busy: ${fb.busy.join(", ")}`);
+      lines.push(`Open ${humanDuration(fb.freeMinutes)} of a ${humanDuration(fb.workday.minutes)} workday (${fb.freePct}% free):`);
+      for (const f of fb.free) lines.push(`  • free ${f.start}–${f.end}`);
+      if (fb.busy.length) {
+        lines.push("  booked:");
+        for (const b of fb.busy) lines.push(`  • ${b.start}–${b.end}  ${b.title}`);
+      }
     }
   }
   return lines.join("\n");
+}
+
+async function handleWeek() {
+  const week = await getWeekSummary({});
+  const lines = [`🗓 Your week — starting ${week.start}`, ""];
+  for (const d of week.days ?? []) {
+    lines.push(`${d.day ?? d.date} · ${d.date}:`);
+    if (d.degraded) lines.push("  ⚠️ unavailable");
+    else if (!d.summary?.length) lines.push("  — open");
+    else for (const it of d.summary) lines.push(`  ${it.time}  ${it.title}${it.calendar ? `  · ${it.calendar}` : ""}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
 }
 
 /* ----------------------------------------------------------------- itinerary */
@@ -281,9 +326,16 @@ async function confirmCalendar(_low, session) {
 }
 
 function clearProposal(session) {
-  const had = session.pendingFlight ? "flight options" : session.pendingCalendar ? "calendar proposal" : "";
+  const had = session.pendingFlight
+    ? "flight options"
+    : session.pendingCalendar
+    ? "calendar proposal"
+    : session.pendingEmail
+    ? "email draft"
+    : "";
   delete session.pendingFlight;
   delete session.pendingCalendar;
+  delete session.pendingEmail;
   return had ? `OK — dropped the pending ${had}.` : "Nothing pending.";
 }
 
@@ -328,34 +380,53 @@ function extractSummary(low) {
 
 /* --------------------------------------------------------------------- email */
 
-async function handleEmail(low) {
-  // Fallback path (no brain): read the real mailbox rather than the old
-  // subject-regex triage, so the no-LLM answer is still honest.
-  const wantsRead = /read|what.*(in|inside|say|about)|summar|digest|unread|recent|latest/.test(low);
-  if (wantsRead) {
-    const box = await readMail({ query: "in:inbox newer_than:14d", max: 10 });
-    if (box.simulated) return `📥 Demo mail — no Gmail provider configured.\n\n${box.top}`;
-    if (box.error) return `📥 Could not read the mailbox: ${box.error}`;
-    if (!box.messages.length) return "📥 Nothing in the inbox for that search.";
-    const lines = [`📥 ${box.fetched} message${box.fetched === 1 ? "" : "s"} (${box.query})`, ""];
-    for (const m of box.messages) {
-      const flag = m.unread ? "●" : "○";
-      lines.push(`${flag} ${m.from} — ${m.subject}`);
-      if (m.snippet) lines.push(`   ${m.snippet}`);
-    }
-    lines.push("", `Showing ${box.fetched}${box.totalMatching ? ` of ~${box.totalMatching} matching` : ""}. Ask about a specific one to see more.`);
-    return lines.join("\n");
-  }
+/** "Jane Doe <jane@x.com>" → "Jane Doe". */
+function senderName(from = "") {
+  const m = /^\s*"?([^"<]+?)"?\s*<([^>]+)>/.exec(String(from));
+  return (m?.[1] ?? String(from)).trim() || String(from);
+}
 
-  const summary = await inboxSummary({});
-  if (summary.error) return `📥 Could not read the inbox: ${summary.error}`;
-  const lines = [`📥 Inbox — ${summary.count ?? summary.unread} unread${summary.simulated ? " (demo data)" : ""}`, ""];
-  for (const e of summary.urgent ?? []) lines.push(`• ${e.from}: "${e.subject}"`);
-  if (/draft|reply/.test(low)) {
-    const d = await draftReply({ to: summary.urgent?.[0]?.from, topic: summary.urgent?.[0]?.subject });
-    lines.push("", `Draft for approval:\n${d.body}`);
+async function handleEmail(low, session) {
+  // Fallback path (no brain): read the real mailbox and answer like a PA —
+  // "you have a mail from X" plus a one-line summary — never a raw dump.
+  const box = await readMail({ query: "in:inbox newer_than:14d", max: 8 });
+  if (box.simulated) return `📥 Demo mail — no Gmail provider configured.\n\n${box.top}`;
+  if (box.error) return `📥 Could not read the mailbox: ${box.error}`;
+  if (!box.messages.length) return "📥 Nothing new in the inbox — you're clear.";
+
+  const lines = [
+    `📥 ${box.fetched} recent message${box.fetched === 1 ? "" : "s"}${box.totalMatching ? ` (of ~${box.totalMatching} matching)` : ""}:`,
+    "",
+  ];
+  for (const m of box.messages.slice(0, 6)) {
+    const who = senderName(m.from);
+    const summary = String(m.snippet ?? "").trim();
+    lines.push(`${m.unread ? "●" : "○"} From ${who} — ${summary || m.subject || "(no subject)"}`);
+    if (m.subject && summary) lines.push(`   ↳ ${m.subject}`);
+  }
+  lines.push("");
+
+  if (/reply|respond|draft/.test(low)) {
+    const first = box.messages[0];
+    const draft = await draftReply({ to: first.from, topic: first.subject });
+    session.pendingEmail = {
+      to: first.from,
+      subject: draft.subject ?? `RE: ${first.subject ?? ""}`,
+      body: draft.body ?? "",
+    };
+    lines.push(`✍️ Draft ready for ${senderName(first.from)} — review it, then say "send" to send (or "never mind"):`, "", draft.body ?? "");
+  } else {
+    lines.push(`Want me to go deeper? Say "reply to <name> saying ..." or "read the one from <name>".`);
   }
   return lines.join("\n");
+}
+
+async function confirmEmail(session) {
+  const { to, subject, body } = session.pendingEmail;
+  const res = await sendEmail({ to, subject, body });
+  if (!res?.ok) return `✉️ Couldn't send to ${to}: ${res?.error ?? "unknown error"}. Draft not sent — tell me to try again.`;
+  delete session.pendingEmail;
+  return [`✉️ Sent to ${to}.`, subject ? `Subject: ${subject}` : "", res.id ? `Ref: ${res.id}` : ""].filter(Boolean).join("\n");
 }
 
 /* ---------------------------------------------------------------- date parser */
@@ -367,13 +438,13 @@ function fmtLocal(d) {
 // "Today" must mean today in the boss's zone. On a UTC server these used to be
 // the server's date, which was a day off for most of the US evening.
 function localToday() {
-  return zonedToday(cfg.bossTimezone ?? "America/New_York");
+  return zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
 }
 
 function dayOfWeekInZone() {
   return Number(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: cfg.bossTimezone ?? "America/New_York",
+      timeZone: cfg.bossTimezone ?? "Africa/Lagos",
       weekday: "number",
     }).format(new Date()),
   ) % 7;
@@ -384,7 +455,7 @@ function detectDate(t) {
   const named = /(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.exec(t);
   if (named) {
     const target = DAY_NAMES.indexOf(named[2]);
-    const today = zonedToday(cfg.bossTimezone ?? "America/New_York");
+    const today = zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
     let diff = (target - dayOfWeekInZone() + 7) % 7;
     if (diff === 0) diff = 7; // "Friday" means the coming one, not today
     if (named[1]) diff += 7;

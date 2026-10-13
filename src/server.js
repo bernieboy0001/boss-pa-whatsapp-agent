@@ -8,14 +8,14 @@ import { cfg, brainConfigured } from "./config.js";
 import { handleMessage } from "./agent.js";
 import { normalizeInbound, sendText, verifyWebhook } from "./photon.js";
 import { viewItinerary } from "./tools/itinerary.js";
-import { getTodaySummary, freeBusy, listCalendars } from "./tools/calendar.js";
+import { getTodaySummary, freeBusy, listCalendars, getWeekSummary } from "./tools/calendar.js";
 import { getEvents } from "./tools/events.js";
 import { inboxSummary, readMail, mailboxStatsSafe } from "./tools/email.js";
 import { getPrefs, setPrefs } from "./prefs.js";
 import { getReminders, getTrends, suggestTime, addReminder, updateReminder, deleteReminder } from "./tools/reminders.js";
 import { searchLaw, findTemplates } from "./tools/legal.js";
 import { ensureHydrated, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
-import { zonedDateStr, zonedToday, addDays } from "./tools/zoned-time.js";
+import { zonedDateStr } from "./tools/zoned-time.js";
 import { getProviderHealth } from "./tools/provider-health.js";
 import { generateAuthUrl, exchangeCodeForTokens, setStoredRefreshToken } from "./tools/oauth2-client.js";
 
@@ -105,24 +105,13 @@ app.get("/api/day", async (req, res) => {
 
 app.get("/api/week", async (req, res) => {
   try {
-    // Walk calendar days in the boss's zone, not the server's. `new Date()` +
-    // setDate() steps in server-local time, so on a UTC instance the week
-    // either started a day early/late or rolled over at 20:00 ET.
-    const tz = cfg.bossTimezone ?? "America/New_York";
-    const first = req.query.start ? zonedDateStr(new Date(req.query.start), tz) : zonedToday(tz);
-    const days = [];
-    for (let i = 0; i < 7; i++) {
-      const date = addDays(first, i);
-      const summary = await getTodaySummary({ date });
-      days.push({
-        date,
-        day: summary?.day,
-        summary: summary?.items ?? [],
-        degraded: Boolean(summary?.degraded),
-        ...(summary?.error ? { error: summary.error } : {}),
-      });
-    }
-    res.json({ days });
+    // Walk calendar days in the boss's zone, not the server's. The range read
+    // hits every readable calendar once for the whole week, so shared calendars
+    // aren't dropped and we don't pay 7× the round trips.
+    const tz = cfg.bossTimezone ?? "Africa/Lagos";
+    const start = req.query.start ? zonedDateStr(new Date(req.query.start), tz) : undefined;
+    const week = await getWeekSummary({ start });
+    res.json({ days: week.days, calendars: week.calendars ?? [], ...(week.warnings ? { warnings: week.warnings } : {}) });
   } catch (e) {
     console.error("[api/week] error:", e.message);
     res.status(500).json({ error: e.message });

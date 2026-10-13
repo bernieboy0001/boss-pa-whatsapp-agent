@@ -1,20 +1,21 @@
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getTodaySummary as gcalToday, freeBusy as gcalFreeBusy, bookOrMove as gcalBookOrMove } from "./google-calendar.js";
-import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars } from "./google-calendar-oauth.js";
-import { zonedToday, zonedWeekdayName } from "./zoned-time.js";
+import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars, getRangeSummary as oauthRange } from "./google-calendar-oauth.js";
+import { zonedToday, zonedWeekdayName, addDays } from "./zoned-time.js";
+import { availabilityFromItems, minutesOf } from "./availability.js";
 import { markProviderOk, markProviderFail } from "./provider-health.js";
 import { currentRefreshToken } from "./oauth2-client.js";
 
 function todayISO() {
-  return zonedToday(cfg.bossTimezone ?? "America/New_York");
+  return zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
 }
 
 function buildDayItems(date) {
   // "Done" should follow the boss's clock, not the server's (UTC on Vercel).
   const hour = Number(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: cfg.bossTimezone ?? "America/New_York",
+      timeZone: cfg.bossTimezone ?? "Africa/Lagos",
       hour: "numeric",
       hour12: false,
     }).format(new Date()),
@@ -38,12 +39,8 @@ function buildDayItems(date) {
     .sort((a, b) => a.time.localeCompare(b.time));
 }
 
-const OPEN_HOURS = [
-  "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00",
-];
-
 function stubToday(req) {
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const tz = cfg.bossTimezone ?? "Africa/Lagos";
   const date = req?.date ?? todayISO();
   const name = zonedWeekdayName(date, tz);
   return { id: "day", date, day: name, title: `${name} — ${date}`, items: buildDayItems(date), stub: true };
@@ -51,11 +48,11 @@ function stubToday(req) {
 
 function stubFreeBusy(req) {
   const date = req?.date ?? todayISO();
-  const items = buildDayItems(date);
-  const busyText = items.map((i) => `${i.time} ${i.title}`);
-  const taken = new Set(items.map((i) => i.time.slice(0, 2)));
-  const free = OPEN_HOURS.filter((h) => !taken.has(h.slice(0, 2))).slice(0, 6);
-  return { date, free, busy: busyText };
+  const items = buildDayItems(date).map((i) => {
+    const startMin = minutesOf(i.time) ?? 0;
+    return { ...i, startMin, endMin: startMin + 60, allDay: false };
+  });
+  return { date, ...availabilityFromItems(items) };
 }
 
 function stubBookOrMove(req) {
@@ -107,7 +104,7 @@ function localOnlyItems(date) {
  * could not be read.
  */
 function degradedDay(req, reason) {
-  const tz = cfg.bossTimezone ?? "America/New_York";
+  const tz = cfg.bossTimezone ?? "Africa/Lagos";
   const date = req?.date ?? todayISO();
   const name = zonedWeekdayName(date, tz);
   return {
@@ -124,7 +121,7 @@ function degradedDay(req, reason) {
 
 function degradedFreeBusy(req, reason) {
   const date = req?.date ?? todayISO();
-  return { date, free: [], busy: [], degraded: true, error: reason };
+  return { date, free: [], busy: [], freeMinutes: null, busyMinutes: null, freePct: null, busyPct: null, degraded: true, error: reason };
 }
 
 /** Try each configured provider in order; return the first success or why all failed. */
@@ -172,6 +169,38 @@ export async function getTodaySummary(req) {
 export async function freeBusy(req) {
   const result = await viaProviders({ sa: gcalFreeBusy, oauth: oauthFreeBusy }, stubFreeBusy, req);
   return result instanceof Error ? degradedFreeBusy(req, result.message) : result;
+}
+
+/**
+ * A week of events across every readable calendar. Prefers the batched
+ * range read (one `events.list` per calendar for the whole week); falls back to
+ * day-by-day through the normal provider chain for the service account or demo.
+ */
+export async function getWeekSummary({ start } = {}) {
+  if (useOAuth2()) {
+    try {
+      const out = await oauthRange({ start });
+      markProviderOk("calendar");
+      return out;
+    } catch (e) {
+      console.warn("[calendar] week range failed:", e.message);
+      markProviderFail("calendar", e);
+    }
+  }
+  const first = start || todayISO();
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const date = addDays(first, i);
+    const s = await getTodaySummary({ date });
+    days.push({
+      date,
+      day: s?.day,
+      summary: s?.items ?? [],
+      degraded: Boolean(s?.degraded),
+      ...(s?.error ? { error: s.error } : {}),
+    });
+  }
+  return { start: first, days, degraded: days.some((d) => d.degraded) };
 }
 
 export async function bookOrMove(req) {

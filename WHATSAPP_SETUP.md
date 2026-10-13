@@ -85,7 +85,7 @@ PHOTON_AGENT_PHONE=15551234567      # E.164 format
 # Google Workspace (for Calendar/Gmail — §0 fork)
 GOOGLE_SA_KEY_PATH=./sa-key.json
 BOSS_CALENDAR_EMAIL=boss@company.com
-BOSS_TIMEZONE=America/New_York
+BOSS_TIMEZONE=Africa/Lagos
 ```
 
 ---

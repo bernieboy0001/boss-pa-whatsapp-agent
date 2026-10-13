@@ -1,8 +1,8 @@
 import { cfg, brainConfigured } from "./config.js";
 import { getPrefs, setPrefs } from "./prefs.js";
 import { searchFlights, bookFlight } from "./tools/flights.js";
-import { getTodaySummary, freeBusy, bookOrMove } from "./tools/calendar.js";
-import { inboxSummary, draftReply, readMail } from "./tools/email.js";
+import { getTodaySummary, freeBusy, bookOrMove, getWeekSummary } from "./tools/calendar.js";
+import { inboxSummary, readMail, sendEmail } from "./tools/email.js";
 import { addFlightToItinerary, getItinerary } from "./tools/itinerary.js";
 
 /**
@@ -114,6 +114,15 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_week",
+      description:
+        "Summarize the boss's calendar for the next 7 days across ALL their calendars. Use for \"what's my week\", \"this week\", \"week ahead\".",
+      parameters: { type: "object", properties: { start: { type: "string", description: "YYYY-MM-DD, defaults to today" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "free_busy",
       description: "Which hours are free vs busy on a day.",
       parameters: { type: "object", properties: { date: { type: "string" } } },
@@ -146,11 +155,16 @@ const TOOLS = [
     type: "function",
     function: {
       name: "draft_reply",
-      description: "Draft an email reply for the boss to approve. Never sends.",
+      description:
+        "Stage a drafted email reply for the boss to review and approve. NOTHING is sent. You MUST write the full reply body yourself and pass it as `body`. After staging, show the boss the draft and tell them to say 'send' to send it. Use read_mailbox first if you need the message you're replying to.",
       parameters: {
         type: "object",
-        properties: { to: { type: "string" }, topic: { type: "string" } },
-        required: ["topic"],
+        properties: {
+          to: { type: "string", description: "recipient email address" },
+          subject: { type: "string", description: "subject, usually 'RE: <original subject>'" },
+          body: { type: "string", description: "the complete reply text, as the boss would send it" },
+        },
+        required: ["to", "body"],
       },
     },
   },
@@ -211,6 +225,15 @@ const EVENT_TOOL = {
   },
 };
 
+const SEND_TOOL = {
+  type: "function",
+  function: {
+    name: "send_email",
+    description: "Send the staged email draft. Only call after the boss explicitly says send/confirm.",
+    parameters: { type: "object", properties: {} },
+  },
+};
+
 async function runTool(name, args, ctx) {
   switch (name) {
     case "search_flights": {
@@ -230,14 +253,29 @@ async function runTool(name, args, ctx) {
     }
     case "get_day":
       return getTodaySummary({ date: args.date });
+    case "get_week":
+      return getWeekSummary({ start: args.start });
     case "free_busy":
       return freeBusy({ date: args.date });
     case "read_mailbox":
       return readMail({ query: args.query, max: args.max });
     case "inbox_summary":
       return inboxSummary({});
-    case "draft_reply":
-      return draftReply({ to: args.to, topic: args.topic });
+    case "draft_reply": {
+      ctx.session.pendingEmail = {
+        to: args.to,
+        subject: args.subject ?? "",
+        body: args.body ?? "",
+      };
+      return { staged: true, to: args.to, subject: args.subject ?? "", note: "awaiting the boss's explicit 'send'" };
+    }
+    case "send_email": {
+      const pending = ctx.session.pendingEmail;
+      if (!pending) return { error: "No email draft is staged — draft one first." };
+      const res = await sendEmail(pending);
+      if (res?.ok) delete ctx.session.pendingEmail;
+      return res;
+    }
     case "remember":
       return setPrefs({ [args.key]: args.value });
     case "get_itinerary":
@@ -253,8 +291,8 @@ async function runTool(name, args, ctx) {
     case "book_event": {
       const pending = ctx.session.pendingCalendar;
       if (!pending) return { error: "No calendar proposal is pending — propose one first." };
-      const res = bookOrMove(pending);
-      delete ctx.session.pendingCalendar;
+      const res = await bookOrMove(pending);
+      if (res?.ok) delete ctx.session.pendingCalendar;
       return res;
     }
     case "book_flight": {
@@ -291,7 +329,9 @@ function systemPrompt(session) {
   const lines = [
     "You are the Boss's personal assistant (PA), texting over the boss's chat channel. You are capable, discreet, and concise — at most a few short sentences unless presenting options.",
     `Today is ${today} in the boss's timezone (${prefs.bossZone}). Always use real, upcoming dates (current year); never invent past dates for events or flights.`,
-    "You can: search real flights (then present options and book ONLY after explicit confirmation), read the boss's calendar and free/busy, summarize the inbox, draft email for approval, build the itinerary, and remember preferences.",
+    "You can: search real flights (then present options and book ONLY after explicit confirmation), read the boss's calendar and free/busy, summarize the inbox, draft and send email on the boss's behalf, build the itinerary, and remember preferences.",
+    "EMAIL: when the boss asks about their mail, read it and answer like a sharp PA — name who each message is from and give a one-line, specific summary of what it says and what (if anything) it needs. Never dump a raw list or bare subjects.",
+    "EMAIL REPLY: to reply, read the relevant message, compose the full reply yourself, then call draft_reply (this stages it — nothing sends). Show the boss the draft and tell them to say 'send'. Only call send_email after the boss explicitly says send/confirm.",
     "SAFETY: never claim you booked, sent, or changed anything unless a tool actually did it.",
     "If options were just presented, an explicit instruction to book (\"book the cheapest\", \"book it\", \"book f2\", \"confirm\") IS the confirmation — call book_flight immediately, don't ask again. If no options exist yet, search first; never book without a prior explicit request.",
     "For calendar changes (schedule/move/cancel a meeting): call propose_event to put the proposal in front of the boss, and never book_event until the boss says \"confirm\" in the SAME message you just received. Tell them to reply 'confirm'.",
@@ -308,6 +348,11 @@ function systemPrompt(session) {
   if (session.pendingCalendar) {
     lines.push(
       `There is a pending calendar proposal: ${session.pendingCalendar.action} "${session.pendingCalendar.summary}" at ${session.pendingCalendar.when || "unscheduled"}. It is NOT committed yet.`,
+    );
+  }
+  if (session.pendingEmail) {
+    lines.push(
+      `There is a staged email draft to ${session.pendingEmail.to} ("${session.pendingEmail.subject || "no subject"}") that has NOT been sent. If the boss says send/confirm, call send_email; if they say never mind, do not send.`,
     );
   }
   return lines.join("\n");
@@ -405,6 +450,7 @@ export async function brainReply(question, ctx = {}) {
   const tools = [...TOOLS];
   if (session.pendingFlight) tools.push(BOOK_TOOL);
   if (session.pendingCalendar) tools.push(EVENT_TOOL);
+  if (session.pendingEmail) tools.push(SEND_TOOL);
   const messages = [
     { role: "system", content: systemPrompt(session) },
     { role: "user", content: question },

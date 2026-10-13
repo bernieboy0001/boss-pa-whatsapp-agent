@@ -9,7 +9,7 @@ import { getDoc, setDoc } from "./store.js";
  */
 
 const DEFAULT = {
-  bossZone: "America/New_York",
+  bossZone: "Africa/Lagos",
   airline: "",
   seat: "aisle",
   cabin: "economy",
