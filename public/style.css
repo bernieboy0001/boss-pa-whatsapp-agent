@@ -911,3 +911,109 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ============================================================================
+   Readability pass — larger, calmer type
+   ========================================================================= */
+
+body { font-size: 15.5px; }
+
+.eyebrow, .card-kicker, .week-day-header { font-size: 11px; }
+.brand-name { font-size: 18px; }
+.brand-tag { font-size: 9px; }
+.nav-item { font-size: 14.5px; }
+.nav-item span { font-size: 17px; }
+.system-status { font-size: 12px; }
+.profile strong { font-size: 14px; }
+.profile small { font-size: 11.5px; }
+.topbar h1 { font-size: 33px; }
+.topbar h1 span { font-size: 22px; }
+.icon-btn { font-size: 18px; }
+.primary-btn, .send-btn { font-size: 12px; }
+
+.hero-label { font-size: 11px; }
+.hero-card h2 { font-size: 33px; }
+.hero-card p { font-size: 14px; max-width: 360px; }
+.ghost-btn { font-size: 12px; }
+
+.metric-card strong { font-size: 42px; }
+.metric-card strong span { font-size: 18px; }
+.metric-card small, .accent small { font-size: 12px; }
+.accent .next-time { font-size: 34px; }
+.accent h3 { font-size: 19px; }
+.mini-link { font-size: 11.5px; }
+
+.surface-head h2 { font-size: 22px; }
+.pill { font-size: 10px; }
+
+.welcome-message { font-size: 13.5px; max-width: 400px; }
+.msg-bubble { font-size: 14.5px; line-height: 1.6; padding: 12px 15px; }
+.typing-label { font-size: 12.5px; }
+.typing-secs { font-size: 11px; }
+.chat-input-form input { font-size: 14px; }
+
+.ai-card-title { font-size: 14px; }
+.ai-card-sub, .ai-warn { font-size: 11.5px; }
+.ai-card-empty, .ai-card-foot { font-size: 12px; }
+.flight-carrier, .flight-price { font-size: 13px; }
+.flight-times { font-size: 12px; }
+.flight-meta, .flight-id { font-size: 11px; }
+.agenda-item, .inbox-subject { font-size: 13px; }
+.inbox-from, .agenda-time { font-size: 12px; }
+.chat-action { font-size: 11px; }
+.stop-btn { font-size: 11px; }
+.suggestions button, .text-btn, .add-btn { font-size: 12px; }
+
+.mail-search input { font-size: 13px; }
+.mail-meta { font-size: 11.5px; }
+.mail-subject { font-size: 13.5px; }
+.mail-from, .mail-when, .mail-snippet { font-size: 11.5px; }
+.mail-body { font-size: 12.5px; }
+
+.schedule-item { font-size: 14px; }
+.cal-source { font-size: 10px; }
+.cal-banner { font-size: 12px; }
+.fb-row { font-size: 11.5px; }
+.schedule-tabs .tab-btn { font-size: 11px; }
+.week-schedule, .week-schedule li { font-size: 13px; }
+.itinerary-text { font-size: 13.5px; }
+
+.reminder-item { font-size: 13.5px; }
+.rem-due { font-size: 11px; }
+.rem-recur { font-size: 10px; }
+.settings-form label { font-size: 11px; }
+.settings-form input, .settings-form select { font-size: 13px; }
+.settings-icon { font-size: 15px; }
+
+.modal h3 { font-size: 24px; }
+.modal-subtitle, .modal-help { font-size: 13px; }
+.modal label { font-size: 11px; }
+.modal input, .modal select { font-size: 13.5px; }
+.profile-stat-row { font-size: 13.5px; }
+.meta-label { font-size: 11px; }
+.toast { font-size: 13px; }
+.voice-banner p { font-size: 14px; }
+
+/* --- Chat section: independent, always-scrollable reader -------------- */
+
+.chat-surface { height: 440px; min-height: 440px; }
+
+.chat-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  justify-content: flex-start;
+  padding-right: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.chat-messages::-webkit-scrollbar { width: 10px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover { background: var(--primary); }
