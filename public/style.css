@@ -337,12 +337,6 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
   height: 2px;
   background: var(--primary);
 }
-.hero-glow {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 88% 8%, var(--primary-glow), transparent 52%);
-  pointer-events: none;
-}
 .hero-content { position: relative; z-index: 2; padding: 52px 30px 28px; }
 .hero-label {
   font-size: 10px;
@@ -619,9 +613,9 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
 
 /* --- Status pill states ------------------------------------------------- */
 
-.pill.thinking { color: var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); border-color: color-mix(in srgb, var(--primary) 30%, transparent); }
-.pill.fallback { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
-.pill.offline { color: var(--danger); background: color-mix(in srgb, var(--danger) 18%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.pill-thinking { color: var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); border-color: color-mix(in srgb, var(--primary) 30%, transparent); }
+.pill-fallback { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.pill-offline { color: var(--danger); background: color-mix(in srgb, var(--danger) 18%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .status-dot.is-warn { background: var(--danger); }
 .status-dot.is-error { background: var(--danger); }
@@ -839,6 +833,7 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
 .toast-success { border-left-color: var(--green); }
 .toast-error { border-left-color: var(--danger); }
 .toast-warn { border-left-color: var(--primary); }
+.toast-info { border-left-color: var(--primary); }
 .toast.fade-out { opacity: 0; transform: translateY(6px); transition: opacity 0.3s, transform 0.3s; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
