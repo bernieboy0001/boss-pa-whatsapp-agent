@@ -96,9 +96,12 @@ function showToast(message, type = "info") {
 // ============================================================
 // Desktop notifications survive the tab being hidden and, with
 // requireInteraction, stay on screen until dismissed ("persistent"). The chime
-// is synthesised with the Web Audio API so there is no asset to load and it
-// works on every device. Preference is stored per-browser in localStorage.
+// is a real audio asset (/notify-chime.wav), pitch-shifted per event kind; if it
+// can't load we fall back to a synthesised Web Audio tone so sound never dies.
+// Preference is stored per-browser in localStorage.
 const NOTIFY_KEY = "orbit-notify";
+const CHIME_SRC = "/notify-chime.wav";
+const CHIME_RATES = { success: 1.12, warn: 0.92, error: 0.8, info: 1.0 };
 
 function loadNotifyPrefs() {
   try {
@@ -131,9 +134,26 @@ function audioContext() {
   return audioCtx;
 }
 
+let chimeEl = null;
+let chimeBroken = false;
+function chimeAudio() {
+  if (chimeBroken) return null;
+  if (chimeEl) return chimeEl;
+  try {
+    chimeEl = new Audio(CHIME_SRC);
+    chimeEl.preload = "auto";
+    chimeEl.addEventListener("error", () => {
+      chimeBroken = true;
+      chimeEl = null;
+    });
+  } catch {
+    chimeBroken = true;
+  }
+  return chimeEl;
+}
+
 /** Two-note chime, distinct per event kind. */
-function playChime(kind = "info") {
-  if (!state.notify.soundOn) return;
+function playSynthChime(kind = "info") {
   const ctx = audioContext();
   if (!ctx) return;
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
@@ -157,6 +177,28 @@ function playChime(kind = "info") {
     osc.start(start);
     osc.stop(start + 0.36);
   });
+}
+
+/** Play the chime asset (pitch-shifted per kind), falling back to the synth. */
+function playChime(kind = "info") {
+  if (!state.notify.soundOn) return;
+  const el = chimeAudio();
+  if (el) {
+    try {
+      el.pause();
+      el.currentTime = 0;
+      el.playbackRate = CHIME_RATES[kind] || 1.0;
+      el.volume = 0.7;
+      const started = el.play();
+      if (started && typeof started.catch === "function") {
+        started.catch(() => playSynthChime(kind));
+      }
+      return;
+    } catch {
+      /* fall through to the synth */
+    }
+  }
+  playSynthChime(kind);
 }
 
 /** Fire a desktop notification (persistent) + chime, if enabled. */
@@ -215,8 +257,8 @@ async function enableNotifications() {
   saveNotifyPrefs();
   updateNotifyButton();
   // Unlock audio on this user gesture so later chimes are allowed to play.
+  chimeAudio()?.load?.();
   audioContext()?.resume?.().catch(() => {});
-  playChime("success");
   notifyUser("Notifications enabled", { body: `Alerts are on for ${state.userName || "you"}`, kind: "success" });
   showToast("Notifications on — chime for new mail & events", "success");
   startNotifyPoller();
