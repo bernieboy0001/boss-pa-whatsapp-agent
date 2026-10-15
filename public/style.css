@@ -291,6 +291,10 @@ a.profile:hover { background: var(--surface-hover); }
 .icon-btn {
   height: 38px;
   width: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -302,7 +306,15 @@ a.profile:hover { background: var(--surface-hover); }
 .icon-btn.on { color: var(--primary); border-color: var(--primary); }
 .icon-btn.muted { opacity: 0.55; }
 .icon-btn.muted:hover { opacity: 1; }
+.icon-btn svg { display: block; }
 .bell-icon { display: block; }
+.btn-label { display: none; }
+.theme-glyph { display: inline-flex; align-items: center; justify-content: center; }
+.theme-glyph .icon-moon { display: none; }
+[data-theme="light"] .theme-glyph .icon-sun { display: none; }
+[data-theme="light"] .theme-glyph .icon-moon { display: block; }
+.nav-icon { display: inline-flex; align-items: center; justify-content: center; }
+.nav-icon svg { width: 17px; height: 17px; }
 @keyframes bell-ring { 0%,100% { transform: rotate(0); } 20% { transform: rotate(16deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(8deg); } 80% { transform: rotate(-6deg); } }
 .icon-btn.on .bell-icon { animation: bell-ring 2.4s ease-in-out; }
 
@@ -904,14 +916,18 @@ a.profile:hover { background: var(--surface-hover); }
   }
   .brand { display: flex; }
   .brand-tag { display: none; }
-  .nav { display: flex; margin-top: 18px; overflow: auto; }
-  .nav-item { padding: 9px 12px; white-space: nowrap; }
-  .nav-label { display: none; }
+  .nav { display: flex; margin-top: 14px; overflow: auto; gap: 4px; padding-bottom: 4px; }
+  .nav-item { padding: 8px 14px; white-space: nowrap; flex-direction: column; gap: 3px; }
+  .nav-icon svg { width: 20px; height: 20px; }
+  .nav-label { display: block; width: auto; font-size: 11px; opacity: 0.9; }
   .sidebar-bottom { display: none; }
   .main { padding: 24px 16px 40px; }
   .topbar { margin-bottom: 20px; }
   .topbar h1 { font-size: 25px; }
+  .top-actions { gap: 6px; }
   .top-actions .primary-btn { display: none; }
+  .icon-btn.labeled { flex-direction: column; gap: 1px; height: auto; min-width: 48px; padding: 6px 8px; }
+  .icon-btn.labeled .btn-label { display: block; font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.8; }
   .hero-grid, .workspace-grid, .bottom-grid, .settings-form { grid-template-columns: 1fr; }
   .hero-grid .accent { display: block; }
   .metric-card { height: auto; min-height: 150px; }

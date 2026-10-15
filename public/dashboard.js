@@ -473,7 +473,6 @@ async function loadMail(query) {
 // ============================================================
 function initTheme() {
   const themeToggle = $("#themeToggle");
-  const themeIcon = $("#themeIcon");
   const metaThemeColor = $('meta[name="theme-color"]');
 
   const savedTheme = localStorage.getItem("orbit_theme");
@@ -495,14 +494,77 @@ function initTheme() {
   function setTheme(t) {
     document.documentElement.dataset.theme = t;
     localStorage.setItem("orbit_theme", t);
-    if (themeIcon) {
-      themeIcon.textContent = t === "dark" ? "☼" : "☾";
-      themeToggle?.setAttribute("title", t === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode");
-    }
+    // The sun/moon glyphs are swapped by CSS off [data-theme]; here we only
+    // keep the tooltip and the OS theme-color in sync.
+    themeToggle?.setAttribute("title", t === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode");
     if (metaThemeColor) {
       metaThemeColor.setAttribute("content", t === "dark" ? "#1a1313" : "#f7f5f3");
     }
   }
+}
+
+// ============================================================
+// PWA install (Add to Home Screen)
+// ============================================================
+let deferredInstallPrompt = null;
+
+function isStandalone() {
+  return (
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.navigator.standalone === true
+  );
+}
+
+function isIos() {
+  return (
+    /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function initPwa() {
+  const btn = $("#installBtn");
+  if (!btn) return;
+  if (isStandalone()) {
+    btn.hidden = true;
+    return;
+  }
+
+  // Chrome/Edge/Android: a real, one-tap install.
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    btn.hidden = false;
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    btn.hidden = true;
+    showToast("Orbit installed — open it any time from your home screen", "success");
+  });
+
+  // iOS Safari never fires beforeinstallprompt, so surface a manual hint.
+  if (isIos()) btn.hidden = false;
+
+  btn.addEventListener("click", async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      try {
+        await deferredInstallPrompt.userChoice;
+      } catch {
+        /* user dismissed */
+      }
+      deferredInstallPrompt = null;
+      btn.hidden = true;
+      return;
+    }
+    showToast(
+      isIos()
+        ? "Tap the Share button, then “Add to Home Screen” to install Orbit"
+        : "Open your browser menu and choose “Install app” to add Orbit",
+      "info",
+    );
+  });
 }
 
 // ============================================================
@@ -1644,6 +1706,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
   initVoice();
   initInteractions();
+  initPwa();
   loadNotifyPrefs();
   initServiceWorker();
   updateNotifyButton();

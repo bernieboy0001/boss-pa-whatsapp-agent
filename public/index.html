@@ -2,10 +2,19 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#65212A">
   <title>Orbit — Executive AI Assistant</title>
+  <meta name="description" content="Orbit, the Dav-Ric executive AI assistant: calendar, inbox, travel and daily briefing in one place.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-180.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Orbit">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Caladea:ital,wght@0,400;0,700;1,400;1,700&family=Carlito:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
@@ -36,28 +45,28 @@
 
       <nav class="nav" aria-label="Primary Navigation">
         <a class="nav-item active" href="#overview" id="navOverview">
-          <span class="nav-icon">⌂</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
           <span class="nav-label">Overview</span>
         </a>
         <a class="nav-item" href="#today" id="navCalendar">
-          <span class="nav-icon">◷</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg></span>
           <span class="nav-label">Calendar</span>
         </a>
         <a class="nav-item" href="#inbox" id="navInbox">
-          <span class="nav-icon">⌁</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span>
           <span class="nav-label">Inbox</span>
           <b class="nav-badge" id="inboxCountBadge">4</b>
         </a>
         <a class="nav-item" href="#mail" id="navMail">
-          <span class="nav-icon">✉</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg></span>
           <span class="nav-label">Mail</span>
         </a>
         <a class="nav-item" href="#travel" id="navTravel">
-          <span class="nav-icon">↗</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg></span>
           <span class="nav-label">Travel</span>
         </a>
         <a class="nav-item" href="#remindersPanel" id="navReminders">
-          <span class="nav-icon">✓</span>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><path d="m9 11 3 3L22 4"/></svg></span>
           <span class="nav-label">Reminders</span>
         </a>
       </nav>
@@ -94,17 +103,27 @@
           <h1>Good morning, <span id="greetingName">bernie</span></h1>
         </div>
         <div class="top-actions">
-          <button class="icon-btn muted" id="notifyBtn" title="Enable desktop notifications" aria-label="Toggle desktop notifications" aria-pressed="false">
+          <button class="icon-btn labeled muted" id="notifyBtn" title="Enable desktop notifications" aria-label="Toggle desktop notifications" aria-pressed="false">
             <svg class="bell-icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path>
               <path d="M13.7 21a2 2 0 0 1-3.4 0"></path>
             </svg>
+            <span class="btn-label">Alerts</span>
           </button>
-          <button class="icon-btn" id="voiceBtn" title="Speak to Executive PA (Voice Input)" aria-label="Start voice input">
-            <span class="voice-wave-icon">⌁</span>
+          <button class="icon-btn labeled" id="voiceBtn" title="Speak to Executive PA (Voice Input)" aria-label="Start voice input">
+            <span class="voice-wave-icon"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></svg></span>
+            <span class="btn-label">Voice</span>
           </button>
-          <button class="icon-btn" id="themeToggle" title="Toggle Dark / Light Theme" aria-label="Toggle dark mode">
-            <span id="themeIcon">☼</span>
+          <button class="icon-btn labeled" id="themeToggle" title="Toggle Dark / Light Theme" aria-label="Toggle dark mode">
+            <span id="themeIcon" class="theme-glyph">
+              <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+              <svg class="icon-moon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+            </span>
+            <span class="btn-label">Theme</span>
+          </button>
+          <button class="icon-btn labeled" id="installBtn" title="Install Orbit as an app" aria-label="Install app" hidden>
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="btn-label">Install</span>
           </button>
           <button class="primary-btn" id="quickAction" type="button">
             <span class="plus-icon">+</span> Quick action
