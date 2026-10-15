@@ -1,4 +1,5 @@
 import { cfg } from "../config.js";
+import { accountEmail } from "../identity.js";
 import { inboxSummary as gmailInbox, draftReply as gmailDraft, sendEmail as gmailSend } from "./google-gmail.js";
 import { inboxSummary as oauthInbox, draftReply as oauthDraft, sendEmail as oauthSend } from "./google-gmail-oauth.js";
 import { readMailbox, mailboxStats } from "./mail-reader.js";
@@ -45,7 +46,7 @@ async function stubSend(req) {
 }
 
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
-const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && cfg.bossCalendarEmail);
+const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && accountEmail());
 const anyProvider = () => useServiceAccount() || useOAuth2();
 
 /**

@@ -259,6 +259,10 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
 .profile strong { font-weight: 600; font-size: 13px; }
 .profile small { color: var(--dim); font-size: 10.5px; margin-top: 1px; }
 .profile > span:last-child { margin-left: auto; color: var(--dim); }
+a.profile { text-decoration: none; color: inherit; border-radius: var(--radius-sm); }
+a.profile:hover { background: var(--surface-hover); }
+.avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+.profile.signout { margin-top: 4px; }
 
 /* --- Main -------------------------------------------------------------- */
 

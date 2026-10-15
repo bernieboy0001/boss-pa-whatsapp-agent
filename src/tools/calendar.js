@@ -1,4 +1,5 @@
 import { cfg } from "../config.js";
+import { homeTimezone, accountEmail } from "../identity.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getTodaySummary as gcalToday, freeBusy as gcalFreeBusy, bookOrMove as gcalBookOrMove } from "./google-calendar.js";
 import { getTodaySummary as oauthToday, freeBusy as oauthFreeBusy, bookOrMove as oauthBookOrMove, listCalendars as oauthListCalendars, getRangeSummary as oauthRange } from "./google-calendar-oauth.js";
@@ -8,14 +9,14 @@ import { markProviderOk, markProviderFail } from "./provider-health.js";
 import { currentRefreshToken } from "./oauth2-client.js";
 
 function todayISO() {
-  return zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
+  return zonedToday(homeTimezone());
 }
 
 function buildDayItems(date) {
   // "Done" should follow the boss's clock, not the server's (UTC on Vercel).
   const hour = Number(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: cfg.bossTimezone ?? "Africa/Lagos",
+      timeZone: homeTimezone(),
       hour: "numeric",
       hour12: false,
     }).format(new Date()),
@@ -40,7 +41,7 @@ function buildDayItems(date) {
 }
 
 function stubToday(req) {
-  const tz = cfg.bossTimezone ?? "Africa/Lagos";
+  const tz = homeTimezone();
   const date = req?.date ?? todayISO();
   const name = zonedWeekdayName(date, tz);
   return { id: "day", date, day: name, title: `${name} — ${date}`, items: buildDayItems(date), stub: true };
@@ -74,7 +75,7 @@ function stubBookOrMove(req) {
 }
 
 const useServiceAccount = () => Boolean(cfg.saKeyPath && cfg.bossCalendarEmail);
-const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && cfg.bossCalendarEmail);
+const useOAuth2 = () => Boolean(cfg.googleOauthClientId && cfg.googleOauthClientSecret && currentRefreshToken() && accountEmail());
 
 /**
  * Real events the assistant booked, read straight from the store. Independent
@@ -104,7 +105,7 @@ function localOnlyItems(date) {
  * could not be read.
  */
 function degradedDay(req, reason) {
-  const tz = cfg.bossTimezone ?? "Africa/Lagos";
+  const tz = homeTimezone();
   const date = req?.date ?? todayISO();
   const name = zonedWeekdayName(date, tz);
   return {

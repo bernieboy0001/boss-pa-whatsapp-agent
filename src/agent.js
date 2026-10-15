@@ -1,5 +1,6 @@
 import { getPrefs } from "./prefs.js";
 import { cfg } from "./config.js";
+import { homeTimezone } from "./identity.js";
 import { searchFlights, printFlights, bookFlight } from "./tools/flights.js";
 import { getTodaySummary, freeBusy, bookOrMove, getWeekSummary } from "./tools/calendar.js";
 import { draftReply, readMail, sendEmail } from "./tools/email.js";
@@ -508,13 +509,13 @@ function fmtLocal(d) {
 // "Today" must mean today in the boss's zone. On a UTC server these used to be
 // the server's date, which was a day off for most of the US evening.
 function localToday() {
-  return zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
+  return zonedToday(homeTimezone());
 }
 
 function dayOfWeekInZone() {
   return Number(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: cfg.bossTimezone ?? "Africa/Lagos",
+      timeZone: homeTimezone(),
       weekday: "number",
     }).format(new Date()),
   ) % 7;
@@ -525,7 +526,7 @@ function detectDate(t) {
   const named = /(next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.exec(t);
   if (named) {
     const target = DAY_NAMES.indexOf(named[2]);
-    const today = zonedToday(cfg.bossTimezone ?? "Africa/Lagos");
+    const today = zonedToday(homeTimezone());
     let diff = (target - dayOfWeekInZone() + 7) % 7;
     if (diff === 0) diff = 7; // "Friday" means the coming one, not today
     if (named[1]) diff += 7;

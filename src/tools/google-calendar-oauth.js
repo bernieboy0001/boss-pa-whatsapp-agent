@@ -2,20 +2,27 @@ import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { addEvent, getEvents, eventsOn, updateEvent, removeEvent } from "./events.js";
 import { getOAuth2Client } from "./oauth2-client.js";
+import { scopeId } from "../context.js";
+import { homeTimezone } from "../identity.js";
 import { zonedDayBounds, zonedDateStr, zonedTimeStr, zonedToday, zonedWeekdayName, zonedISOString, addDays } from "./zoned-time.js";
 import { availabilityFromItems, minutesOf } from "./availability.js";
 
-let calendarClient = null;
+// Caches are keyed by user scope: each signed-in account has its own calendar
+// client and calendar list, so one user's listing never leaks into another's.
+const clientCache = new Map();
 
 function getCalendarClient() {
-  if (calendarClient) return calendarClient;
-  const auth = getOAuth2Client();
-  calendarClient = google.calendar({ version: "v3", auth });
-  return calendarClient;
+  const key = scopeId();
+  let client = clientCache.get(key);
+  if (!client) {
+    client = google.calendar({ version: "v3", auth: getOAuth2Client() });
+    clientCache.set(key, client);
+  }
+  return client;
 }
 
 function bossZone() {
-  return cfg.bossTimezone ?? "Africa/Lagos";
+  return homeTimezone();
 }
 
 function todayISO() {
@@ -47,12 +54,15 @@ function eventWindow(when, tz, minutes = 60) {
  * shared family calendar even though the token can see it. Cached briefly
  * because this is a round trip on every agenda render.
  */
-let calendarCache = { at: 0, list: [] };
 const CALENDAR_TTL_MS = 5 * 60 * 1000;
+// Keyed by user scope so a cached list is never reused across accounts.
+const calendarCacheByScope = new Map();
 
 async function readableCalendars() {
-  if (Date.now() - calendarCache.at < CALENDAR_TTL_MS && calendarCache.list.length) {
-    return calendarCache.list;
+  const scope = scopeId();
+  const cache = calendarCacheByScope.get(scope) ?? { at: 0, list: [] };
+  if (Date.now() - cache.at < CALENDAR_TTL_MS && cache.list.length) {
+    return cache.list;
   }
   const cal = getCalendarClient();
   const res = await cal.calendarList.list({ minAccessRole: "reader" });
@@ -66,7 +76,7 @@ async function readableCalendars() {
     reference: /holiday|birthday|week.?number/i.test(c.summary ?? c.id),
   }));
   list.sort((a, b) => Number(b.primary) - Number(a.primary) || a.summary.localeCompare(b.summary));
-  calendarCache = { at: Date.now(), list };
+  calendarCacheByScope.set(scope, { at: Date.now(), list });
   return list;
 }
 

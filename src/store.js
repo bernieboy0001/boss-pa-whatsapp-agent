@@ -34,9 +34,14 @@
  *   KV_REST_API_URL, KV_REST_API_TOKEN
  */
 
+import { scopeId } from "./context.js";
+
 const PREFIX = "flexagent";
 const SESSION_TTL_SECONDS = 60 * 60 * 24; // 24h
 const SCAN_COUNT = 250;
+
+// Namespaces scoped per user (owner uses the original unscoped keys).
+const SCOPED_NS = ["prefs", "reminders", "events", "itinerary", "secrets", "sessions", "meta"];
 
 const KV_URL = (process.env.KV_REST_API_URL || "").replace(/\/+$/, "");
 const KV_TOKEN = process.env.KV_REST_API_TOKEN || "";
@@ -73,9 +78,9 @@ async function kvCommand(args) {
   return entry.result;
 }
 
-/** Collect every key under `ns`, following the SCAN cursor to exhaustion. */
-async function kvKeys(ns) {
-  const match = `${PREFIX}:${ns}:*`;
+/** Collect every key belonging to `ns` within `scope`, following the cursor. */
+async function kvKeys(ns, scope) {
+  const match = `${PREFIX}:${scope ? scope + ":" : ""}${ns}:*`;
   const found = [];
   let cursor = "0";
   // Bounded to avoid a pathological loop if the backend misbehaves.
@@ -90,17 +95,39 @@ async function kvKeys(ns) {
   return found;
 }
 
+// Namespaces that are deliberately global — never scoped to a user.
+const GLOBAL_NS = new Set(["users"]);
+
+/** The scope a namespace resolves to for the active identity. */
+function scopeFor(ns) {
+  return GLOBAL_NS.has(ns) ? "" : scopeId();
+}
+
+function scopedKeyFor(ns, id, scope) {
+  return `${PREFIX}:${scope ? scope + ":" : ""}${ns}:${id}`;
+}
+
 function keyFor(ns, id) {
-  return `${PREFIX}:${ns}:${id}`;
+  return scopedKeyFor(ns, id, scopeFor(ns));
+}
+
+/** Memory-bucket name for a namespace within a scope. */
+function bucketName(ns, scope) {
+  return `${scope ? scope + ":" : ""}${ns}`;
+}
+
+function bucketFor(ns, scope) {
+  const key = bucketName(ns, scope);
+  let bucket = memory.get(key);
+  if (!bucket) {
+    bucket = new Map();
+    memory.set(key, bucket);
+  }
+  return bucket;
 }
 
 function nsFor(ns) {
-  let bucket = memory.get(ns);
-  if (!bucket) {
-    bucket = new Map();
-    memory.set(ns, bucket);
-  }
-  return bucket;
+  return bucketFor(ns, scopeFor(ns));
 }
 
 function track(promise) {
@@ -113,21 +140,22 @@ function track(promise) {
 
 /* ── hydration ──────────────────────────────────────────────────────────── */
 
-function hydrateFromMemoryOnly(ns) {
+function hydrateFromMemoryOnly(ns, scope) {
   // Nothing to do: records written by putRecord() are already in the Map.
-  hydrated.add(ns);
+  hydrated.add(bucketName(ns, scope));
 }
 
-async function hydrateNamespace(ns) {
-  if (hydrated.has(ns)) return;
+async function hydrateNamespace(ns, scope) {
+  const marker = bucketName(ns, scope);
+  if (hydrated.has(marker)) return;
   if (storeKind !== "kv") {
-    hydrateFromMemoryOnly(ns);
+    hydrateFromMemoryOnly(ns, scope);
     return;
   }
 
-  const keys = await kvKeys(ns);
+  const keys = await kvKeys(ns, scope);
   if (keys.length === 0) {
-    hydrated.add(ns);
+    hydrated.add(marker);
     return;
   }
 
@@ -144,44 +172,62 @@ async function hydrateNamespace(ns) {
   if (!res.ok) throw new Error(`kv MGET failed: HTTP ${res.status}`);
   const rows = await res.json();
 
-  const bucket = nsFor(ns);
+  const bucket = bucketFor(ns, scope);
+  const keyPrefix = `${PREFIX}:${scope ? scope + ":" : ""}${ns}:`;
   keys.forEach((key, i) => {
     const row = rows[i];
     const raw = row && row.result;
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
-      const id = key.slice(`${PREFIX}:${ns}:`.length);
+      const id = key.slice(keyPrefix.length);
       bucket.set(id, { id, ...parsed });
     } catch {
       // A malformed record should not take the whole namespace offline.
     }
   });
-  hydrated.add(ns);
+  hydrated.add(marker);
+}
+
+/** Load one scope (owner/legacy = ""). Idempotent, concurrent-safe enough. */
+async function hydrateScope(scope) {
+  for (const ns of SCOPED_NS) {
+    try {
+      await hydrateNamespace(ns, scope);
+    } catch (err) {
+      // Degrade to memory rather than 500 every request on a bad token.
+      console.warn(`[store] KV hydration of ${bucketName(ns, scope)} failed: ${err.message}`);
+    }
+  }
 }
 
 /**
- * Load every namespace into memory. Awaited from request middleware so that
- * synchronous readers below never observe a cold, empty store in production.
- * Safe to call repeatedly and concurrently.
+ * Load the global namespaces plus the owner/legacy key space into memory.
+ * Awaited from request middleware so synchronous readers never observe a cold,
+ * empty store. Safe to call repeatedly and concurrently.
  */
 export async function ensureHydrated() {
   if (hydrationPromise) return hydrationPromise;
   hydrationPromise = (async () => {
-    if (storeKind !== "kv") {
-      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets", "sessions"]) hydrateFromMemoryOnly(ns);
-      return;
-    }
-    try {
-      for (const ns of ["prefs", "reminders", "events", "itinerary", "secrets", "sessions"]) {
-        await hydrateNamespace(ns);
+    await hydrateScope("");
+    if (storeKind === "kv") {
+      try {
+        await hydrateNamespace("users", "");
+      } catch (err) {
+        console.warn(`[store] KV hydration of users failed: ${err.message}`);
       }
-    } catch (err) {
-      // Degrade to memory rather than 500 every request on a bad token.
-      console.warn(`[store] KV hydration failed, serving from memory this instance: ${err.message}`);
     }
   })();
   return hydrationPromise;
+}
+
+/**
+ * Warm a signed-in user's namespaces before their request runs. Keyed off the
+ * unscoped-owner space, this is a no-op; for a real user it loads `u:<id>:*`.
+ */
+export async function ensureHydratedScope(scope) {
+  if (!scope) return ensureHydrated();
+  await hydrateScope(scope);
 }
 
 /* ── reads (synchronous) ────────────────────────────────────────────────── */

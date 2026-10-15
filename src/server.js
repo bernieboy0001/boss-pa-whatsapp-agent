@@ -14,10 +14,24 @@ import { inboxSummary, readMail, mailboxStatsSafe } from "./tools/email.js";
 import { getPrefs, setPrefs } from "./prefs.js";
 import { getReminders, getTrends, suggestTime, addReminder, updateReminder, deleteReminder } from "./tools/reminders.js";
 import { searchLaw, findTemplates } from "./tools/legal.js";
-import { ensureHydrated, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
+import { ensureHydrated, ensureHydratedScope, flush, storeKind, getSession, putSession, clearSession } from "./store.js";
 import { zonedDateStr } from "./tools/zoned-time.js";
 import { getProviderHealth } from "./tools/provider-health.js";
-import { generateAuthUrl, exchangeCodeForTokens, setStoredRefreshToken } from "./tools/oauth2-client.js";
+import { generateAuthUrl, generateSigninUrl, exchangeCodeForTokens, setStoredRefreshToken, decodeIdToken } from "./tools/oauth2-client.js";
+import { runWithUser, scopeId } from "./context.js";
+import { homeTimezone } from "./identity.js";
+import {
+  authEnabled,
+  resolveUser,
+  signSession,
+  sessionSetCookie,
+  upsertUser,
+  isAllowed,
+  signState,
+  verifyState,
+  loginPageHtml,
+  ownerEmail,
+} from "./auth.js";
 
 /**
  * Phase 2: the always-on webhook the WhatsApp channel (Photon/Spectrum) calls.
@@ -38,6 +52,44 @@ app.use((_req, _res, next) => {
   ensureHydrated().then(next, (err) => {
     console.error("[store] hydration rejected:", err.message);
     next();
+  });
+});
+
+// Resolve who is calling, then run the whole request inside their context so
+// the scoped store and their own Google token resolve correctly. When auth is
+// not configured there is no user, so scope stays "" and behaviour is exactly
+// the original single-owner app.
+const OPEN_API = new Set([
+  "/api/healthz",
+  "/api/me",
+  "/api/login",
+  "/api/logout",
+  "/api/auth-google",
+  "/api/auth-callback",
+  "/api/oauth-start",
+  "/api/oauth2callback",
+  "/api/webhook-photon",
+]);
+
+app.use((req, res, next) => {
+  const gate = authEnabled();
+  const user = gate ? resolveUser(req) : null;
+
+  if (gate && !user) {
+    const p = req.path;
+    if (p.startsWith("/api/") && !OPEN_API.has(p)) {
+      return res.status(401).json({ error: "unauthenticated", login: "/login" });
+    }
+  }
+
+  runWithUser(user, () => {
+    ensureHydratedScope(user ? scopeId() : "").then(
+      next,
+      (err) => {
+        console.error("[store] scope hydration rejected:", err.message);
+        next();
+      },
+    );
   });
 });
 
@@ -108,7 +160,7 @@ app.get("/api/week", async (req, res) => {
     // Walk calendar days in the boss's zone, not the server's. The range read
     // hits every readable calendar once for the whole week, so shared calendars
     // aren't dropped and we don't pay 7× the round trips.
-    const tz = cfg.bossTimezone ?? "Africa/Lagos";
+    const tz = homeTimezone();
     const start = req.query.start ? zonedDateStr(new Date(req.query.start), tz) : undefined;
     const week = await getWeekSummary({ start });
     res.json({ days: week.days, calendars: week.calendars ?? [], ...(week.warnings ? { warnings: week.warnings } : {}) });
@@ -390,6 +442,75 @@ app.get("/oauth-start", oauthStart);
 app.get("/api/oauth-start", oauthStart);
 app.get("/oauth2callback", oauthCallback);
 app.get("/api/oauth2callback", oauthCallback);
+
+// --- Multi-user sign-in ----------------------------------------------------
+// Same OAuth client as the re-auth flow, but a distinct callback so the two
+// never collide: /auth/callback establishes a browser session, /oauth2callback
+// rotates the stored Google token for the signed-in scope.
+
+app.get("/api/me", (req, res) => {
+  const enabled = authEnabled();
+  const user = enabled ? resolveUser(req) : null;
+  res.json({
+    authEnabled: enabled,
+    authenticated: !enabled || Boolean(user),
+    user: user
+      ? { id: user.id, email: user.email, name: user.name, picture: user.picture, isOwner: user.isOwner }
+      : null,
+  });
+});
+
+function loginPage(req, res) {
+  if (!authEnabled() || resolveUser(req)) return res.redirect("/");
+  const error = req.query.error ? String(req.query.error) : "";
+  res.type("html").send(loginPageHtml({ error }));
+}
+app.get("/api/login", loginPage);
+
+app.get("/api/auth-google", (req, res) => {
+  if (!authEnabled()) return res.redirect("/");
+  try {
+    res.redirect(generateSigninUrl(signState()));
+  } catch (e) {
+    res.status(503).type("html").send(loginPageHtml({ error: e.message }));
+  }
+});
+
+app.get("/api/auth-callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.status(400).type("html").send(loginPageHtml({ error: `Authorization failed: ${error}` }));
+  if (!verifyState(state)) return res.status(400).type("html").send(loginPageHtml({ error: "Invalid or expired state — please try again." }));
+  if (!code) return res.status(400).type("html").send(loginPageHtml({ error: "Google returned no authorization code." }));
+
+  try {
+    const tokens = await exchangeCodeForTokens(code, { signin: true });
+    const claims = decodeIdToken(tokens.id_token) || {};
+    const email = String(claims.email || "").toLowerCase();
+    const sub = String(claims.sub || "");
+    if (!sub || !email) return res.status(400).type("html").send(loginPageHtml({ error: "Couldn't read your Google account." }));
+    if (!isAllowed(email)) {
+      return res.status(403).type("html").send(loginPageHtml({ error: `This account (${email}) isn't approved yet.` }));
+    }
+
+    upsertUser({ sub, email, name: claims.name, picture: claims.picture });
+    const identity = { id: sub, email, name: claims.name || "", picture: claims.picture || "", isOwner: email === ownerEmail() };
+    if (tokens.refresh_token) {
+      runWithUser(identity, () => setStoredRefreshToken(tokens.refresh_token));
+      await flush();
+    }
+
+    res.setHeader("Set-Cookie", sessionSetCookie(signSession(sub)));
+    res.redirect("/");
+  } catch (e) {
+    console.error("[auth] sign-in failed:", e.message);
+    res.status(500).type("html").send(loginPageHtml({ error: `Sign-in failed: ${e.message}` }));
+  }
+});
+
+app.get("/api/logout", (_req, res) => {
+  res.setHeader("Set-Cookie", sessionSetCookie(""));
+  res.redirect("/login");
+});
 
 // Unknown API routes must 404 as JSON, never fall through to the SPA shell.
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));

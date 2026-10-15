@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { getOAuth2Client } from "./oauth2-client.js";
+import { scopeId } from "../context.js";
 
 /**
  * Real mailbox reader.
@@ -20,10 +21,13 @@ import { getOAuth2Client } from "./oauth2-client.js";
  */
 
 let gmailClient = null;
+let gmailClientScope = null;
 
 function getGmailClient() {
-  if (gmailClient) return gmailClient;
+  const scope = scopeId();
+  if (gmailClient && gmailClientScope === scope) return gmailClient;
   gmailClient = google.gmail({ version: "v1", auth: getOAuth2Client() });
+  gmailClientScope = scope;
   return gmailClient;
 }
 

@@ -75,8 +75,32 @@ export const cfg = {
   sendUrl: process.env.PHOTON_SEND_URL ?? "",
   agentPhone: process.env.PHOTON_AGENT_PHONE ?? "",
   port: Number(process.env.PORT ?? 3000),
+
+  // --- Multi-user auth (dashboard) ---
+  // Turns the single-tenant dashboard into a per-user app. When enabled, every
+  // signed-in Google account gets its own calendar/mail token, preferences,
+  // reminders and chat history. Leave AUTH unset locally and behaviour is the
+  // original single-owner app.
+  sessionSecret: process.env.SESSION_SECRET ?? "",
+  // Comma-separated allowlist. Only these addresses may sign in. Case-insensitive.
+  allowedEmails: (process.env.ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+  // The account that owns the pre-existing (pre-multi-user) data. Its records
+  // keep the original unscoped storage keys, so nothing has to be migrated.
+  ownerEmail: (process.env.OWNER_EMAIL ?? "delightbernard7@gmail.com").trim().toLowerCase(),
 };
 
 export function brainConfigured() {
   return Boolean(cfg.llmApiKey);
+}
+
+/**
+ * Multi-user mode is on only when there is a signing key AND an allowlist AND
+ * a Google client. Anything short of that falls back to the original
+ * single-owner behaviour, which is what local dev and the smoke suite rely on.
+ */
+export function authConfigured() {
+  return Boolean(cfg.sessionSecret && cfg.allowedEmails.length && cfg.googleOauthClientId && cfg.googleOauthClientSecret);
 }

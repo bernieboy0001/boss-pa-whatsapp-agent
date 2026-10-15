@@ -14,6 +14,10 @@
     { "source": "/healthz", "destination": "/api/healthz" },
     { "source": "/webhook/photon", "destination": "/api/webhook-photon" },
     { "source": "/oauth-start", "destination": "/api/oauth-start" },
-    { "source": "/oauth2callback", "destination": "/api/oauth2callback" }
+    { "source": "/oauth2callback", "destination": "/api/oauth2callback" },
+    { "source": "/login", "destination": "/api/login" },
+    { "source": "/auth/google", "destination": "/api/auth-google" },
+    { "source": "/auth/callback", "destination": "/api/auth-callback" },
+    { "source": "/logout", "destination": "/api/logout" }
   ]
 }

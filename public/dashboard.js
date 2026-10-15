@@ -90,6 +90,10 @@ async function api(path, options = {}) {
       headers: { "Content-Type": "application/json" },
       ...options,
     });
+    if (res.status === 401) {
+      window.location.href = "/login";
+      throw new Error("401 Unauthorized: redirecting to sign-in");
+    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       throw new Error(`${res.status} ${res.statusText}: ${errText}`);
@@ -1307,10 +1311,52 @@ function initInteractions() {
 // ============================================================
 // Initialization
 // ============================================================
-document.addEventListener("DOMContentLoaded", () => {
+async function initAuth() {
+  try {
+    const res = await fetch("/api/me");
+    const me = await res.json();
+    if (me.authEnabled && !me.authenticated) {
+      window.location.href = "/login";
+      return false;
+    }
+    if (me.user) {
+      const name = me.user.name || me.user.email || "Signed in";
+      const initials = name
+        .split(/\s+/)
+        .map((w) => w[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase();
+      const avatarEl = $("#profileAvatar");
+      if (avatarEl) {
+        avatarEl.innerHTML = me.user.picture
+          ? `<img src="${me.user.picture}" alt="">`
+          : initials || "U";
+      }
+      const nameEl = $("#profileName");
+      if (nameEl) nameEl.textContent = name;
+      const roleEl = $("#profileRole");
+      if (roleEl) roleEl.textContent = me.user.isOwner ? "Owner" : "Team";
+      const signOut = $("#signOutBtn");
+      if (signOut) {
+        signOut.hidden = false;
+        const emailEl = $("#signOutEmail");
+        if (emailEl) emailEl.textContent = me.user.email || "";
+      }
+    }
+    return true;
+  } catch (err) {
+    console.warn("[auth] /api/me failed:", err.message);
+    return true;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
   initVoice();
   initInteractions();
+  const ok = await initAuth();
+  if (!ok) return;
   loadAll();
   loadRuntimeStatus();
 });

@@ -1,15 +1,19 @@
 import { google } from "googleapis";
 import { cfg } from "../config.js";
 import { getOAuth2Client } from "./oauth2-client.js";
+import { scopeId } from "../context.js";
 
-let gmailClient = null;
+// Per-user Gmail clients, keyed by scope.
+const clientCache = new Map();
 
 function getGmailClient() {
-  if (gmailClient) return gmailClient;
-
-  const auth = getOAuth2Client();
-  gmailClient = google.gmail({ version: "v1", auth });
-  return gmailClient;
+  const key = scopeId();
+  let client = clientCache.get(key);
+  if (!client) {
+    client = google.gmail({ version: "v1", auth: getOAuth2Client() });
+    clientCache.set(key, client);
+  }
+  return client;
 }
 
 function decodeBase64(str) {

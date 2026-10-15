@@ -69,13 +69,20 @@
           <em id="envBadge">Production</em>
         </div>
         <button class="profile" id="profileBtn" type="button" aria-label="View Executive Profile">
-          <span class="avatar">BE</span>
+          <span class="avatar" id="profileAvatar">BE</span>
           <span class="profile-info">
-            <strong>bernie</strong>
-            <small>Executive Lead</small>
+            <strong id="profileName">bernie</strong>
+            <small id="profileRole">Executive Lead</small>
           </span>
           <span class="profile-more">•••</span>
         </button>
+        <a class="profile signout" id="signOutBtn" href="/logout" hidden>
+          <span class="avatar" id="signOutAvatar">⎋</span>
+          <span class="profile-info">
+            <strong>Sign out</strong>
+            <small id="signOutEmail"></small>
+          </span>
+        </a>
       </div>
     </aside>
 
