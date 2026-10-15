@@ -447,8 +447,12 @@ app.get("/api/oauth2callback", oauthCallback);
 // Same OAuth client as the re-auth flow, but a distinct callback so the two
 // never collide: /auth/callback establishes a browser session, /oauth2callback
 // rotates the stored Google token for the signed-in scope.
+//
+// As with /healthz and /webhook/photon above, Vercel routes the pretty URL to
+// this function but the handler sees the original path, so every route is
+// registered under both its public name (/login) and its /api/ alias.
 
-app.get("/api/me", (req, res) => {
+function meRoute(req, res) {
   const enabled = authEnabled();
   const user = enabled ? resolveUser(req) : null;
   res.json({
@@ -458,25 +462,30 @@ app.get("/api/me", (req, res) => {
       ? { id: user.id, email: user.email, name: user.name, picture: user.picture, isOwner: user.isOwner }
       : null,
   });
-});
+}
+app.get("/me", meRoute);
+app.get("/api/me", meRoute);
 
 function loginPage(req, res) {
   if (!authEnabled() || resolveUser(req)) return res.redirect("/");
   const error = req.query.error ? String(req.query.error) : "";
   res.type("html").send(loginPageHtml({ error }));
 }
+app.get("/login", loginPage);
 app.get("/api/login", loginPage);
 
-app.get("/api/auth-google", (req, res) => {
+function authGoogle(req, res) {
   if (!authEnabled()) return res.redirect("/");
   try {
     res.redirect(generateSigninUrl(signState()));
   } catch (e) {
     res.status(503).type("html").send(loginPageHtml({ error: e.message }));
   }
-});
+}
+app.get("/auth/google", authGoogle);
+app.get("/api/auth-google", authGoogle);
 
-app.get("/api/auth-callback", async (req, res) => {
+async function authCallback(req, res) {
   const { code, state, error } = req.query;
   if (error) return res.status(400).type("html").send(loginPageHtml({ error: `Authorization failed: ${error}` }));
   if (!verifyState(state)) return res.status(400).type("html").send(loginPageHtml({ error: "Invalid or expired state — please try again." }));
@@ -505,12 +514,16 @@ app.get("/api/auth-callback", async (req, res) => {
     console.error("[auth] sign-in failed:", e.message);
     res.status(500).type("html").send(loginPageHtml({ error: `Sign-in failed: ${e.message}` }));
   }
-});
+}
+app.get("/auth/callback", authCallback);
+app.get("/api/auth-callback", authCallback);
 
-app.get("/api/logout", (_req, res) => {
+function logout(req, res) {
   res.setHeader("Set-Cookie", sessionSetCookie(""));
   res.redirect("/login");
-});
+}
+app.get("/logout", logout);
+app.get("/api/logout", logout);
 
 // Unknown API routes must 404 as JSON, never fall through to the SPA shell.
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
