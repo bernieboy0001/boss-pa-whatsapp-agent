@@ -299,6 +299,12 @@ a.profile:hover { background: var(--surface-hover); }
   transition: color 0.2s, border-color 0.2s, background-color 0.2s;
 }
 .icon-btn:hover { color: var(--primary); border-color: var(--primary); background: var(--surface-hover); }
+.icon-btn.on { color: var(--primary); border-color: var(--primary); }
+.icon-btn.muted { opacity: 0.55; }
+.icon-btn.muted:hover { opacity: 1; }
+.bell-icon { display: block; }
+@keyframes bell-ring { 0%,100% { transform: rotate(0); } 20% { transform: rotate(16deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(8deg); } 80% { transform: rotate(-6deg); } }
+.icon-btn.on .bell-icon { animation: bell-ring 2.4s ease-in-out; }
 
 .primary-btn, .send-btn {
   background: var(--primary);

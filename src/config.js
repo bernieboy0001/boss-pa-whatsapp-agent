@@ -5,6 +5,29 @@ dotenv.config();
 const OR_KEY = process.env.OPENROUTER_API_KEY ?? "";
 const GROQ_KEY = process.env.GROQ_API_KEY ?? "";
 
+// Fixed dashboard display names, so a signed-in account shows a chosen name
+// instead of whatever their Google profile happens to say. Env `USER_NAMES`
+// (format "email:NAME,email2:NAME2") extends/overrides these defaults.
+const DEFAULT_DISPLAY_NAMES = {
+  "delightbernard7@gmail.com": "BERNIE",
+  "pa.co.sec.davricgroup@gmail.com": "ESTHER",
+  "jagotunba@gmail.com": "JAGI",
+};
+
+function parseDisplayNames(raw) {
+  const map = {};
+  String(raw || "")
+    .split(",")
+    .forEach((pair) => {
+      const i = pair.indexOf(":");
+      if (i <= 0) return;
+      const email = pair.slice(0, i).trim().toLowerCase();
+      const name = pair.slice(i + 1).trim();
+      if (email && name) map[email] = name;
+    });
+  return map;
+}
+
 // One OpenAI-compatible brain, two possible providers. Whichever key is present
 // wins: explicit LLM_* config first, then OpenRouter, then Groq.
 function resolveBrain() {
@@ -90,7 +113,16 @@ export const cfg = {
   // The account that owns the pre-existing (pre-multi-user) data. Its records
   // keep the original unscoped storage keys, so nothing has to be migrated.
   ownerEmail: (process.env.OWNER_EMAIL ?? "delightbernard7@gmail.com").trim().toLowerCase(),
+
+  // email (lowercase) -> preferred display name.
+  userDisplayNames: { ...DEFAULT_DISPLAY_NAMES, ...parseDisplayNames(process.env.USER_NAMES) },
 };
+
+/** Preferred display name for an account, or "" to fall back to the profile name. */
+export function displayNameFor(email) {
+  const e = String(email || "").trim().toLowerCase();
+  return cfg.userDisplayNames[e] || "";
+}
 
 export function brainConfigured() {
   return Boolean(cfg.llmApiKey);

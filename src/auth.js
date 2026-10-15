@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { cfg, authConfigured } from "./config.js";
+import { cfg, authConfigured, displayNameFor } from "./config.js";
 import { getRecord, putRecord } from "./store.js";
 
 /**
@@ -88,7 +88,7 @@ function userFromRecord(rec) {
   return {
     id: rec.id,
     email: rec.email,
-    name: rec.name || "",
+    name: displayNameFor(rec.email) || rec.name || "",
     picture: rec.picture || "",
     isOwner: String(rec.email || "").toLowerCase() === cfg.ownerEmail,
   };

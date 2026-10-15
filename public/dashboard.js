@@ -17,10 +17,20 @@ const state = {
   templates: [],
   voiceRecognition: null,
   isListening: false,
+  user: null,
+  userName: "",
   chat: {
     inFlight: false,
     controller: null,
     secondsEl: null,
+  },
+  notify: {
+    enabled: false,
+    permission: "default",
+    soundOn: true,
+    timer: null,
+    seenMail: null,
+    seenEvents: null,
   },
 };
 
@@ -79,6 +89,232 @@ function showToast(message, type = "info") {
     toast.classList.add("fade-out");
     setTimeout(() => toast.remove(), 200);
   });
+}
+
+// ============================================================
+// Desktop Notifications + Real Sounds
+// ============================================================
+// Desktop notifications survive the tab being hidden and, with
+// requireInteraction, stay on screen until dismissed ("persistent"). The chime
+// is synthesised with the Web Audio API so there is no asset to load and it
+// works on every device. Preference is stored per-browser in localStorage.
+const NOTIFY_KEY = "orbit-notify";
+
+function loadNotifyPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NOTIFY_KEY) || "{}");
+    state.notify.enabled = Boolean(saved.enabled);
+    state.notify.soundOn = saved.soundOn !== false;
+  } catch {
+    /* ignore corrupt prefs */
+  }
+  state.notify.permission = "Notification" in window ? Notification.permission : "unsupported";
+}
+
+function saveNotifyPrefs() {
+  try {
+    localStorage.setItem(
+      NOTIFY_KEY,
+      JSON.stringify({ enabled: state.notify.enabled, soundOn: state.notify.soundOn }),
+    );
+  } catch {
+    /* storage may be unavailable (private mode) */
+  }
+}
+
+let audioCtx = null;
+function audioContext() {
+  if (audioCtx) return audioCtx;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  audioCtx = new Ctx();
+  return audioCtx;
+}
+
+/** Two-note chime, distinct per event kind. */
+function playChime(kind = "info") {
+  if (!state.notify.soundOn) return;
+  const ctx = audioContext();
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  const notes = {
+    success: [660, 990],
+    warn: [587, 523],
+    error: [440, 330],
+    info: [784, 1046],
+  }[kind] || [784, 1046];
+  const now = ctx.currentTime;
+  notes.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const start = now + i * 0.13;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.34);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + 0.36);
+  });
+}
+
+/** Fire a desktop notification (persistent) + chime, if enabled. */
+async function notifyUser(title, { body = "", kind = "info", url = "/" } = {}) {
+  if (!state.notify.enabled || state.notify.permission !== "granted") return;
+  playChime(kind);
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    if (reg) {
+      await reg.showNotification(title, {
+        body,
+        tag: `orbit-${title}-${body}`.slice(0, 120),
+        renotify: true,
+        requireInteraction: true,
+        silent: true, // we play our own chime
+        icon: "/davric-logo.png",
+        badge: "/davric-logo.png",
+        data: { url },
+      });
+      return;
+    }
+  } catch {
+    /* fall through to the constructor */
+  }
+  try {
+    new Notification(title, { body, icon: "/davric-logo.png", requireInteraction: true });
+  } catch {
+    /* some browsers block the constructor outside a SW context */
+  }
+}
+
+function updateNotifyButton() {
+  const btn = $("#notifyBtn");
+  if (!btn) return;
+  const on = state.notify.enabled && state.notify.permission === "granted";
+  btn.classList.toggle("on", on);
+  btn.classList.toggle("muted", !on);
+  btn.title = on ? "Desktop notifications ON (click to pause)" : "Enable desktop notifications";
+  btn.setAttribute("aria-pressed", String(on));
+}
+
+async function enableNotifications() {
+  if (!("Notification" in window)) {
+    showToast("This browser doesn't support notifications", "error");
+    return false;
+  }
+  let perm = Notification.permission;
+  if (perm !== "granted") perm = await Notification.requestPermission();
+  state.notify.permission = perm;
+  if (perm !== "granted") {
+    showToast("Notifications are blocked — allow them in your browser's site settings", "warn");
+    updateNotifyButton();
+    return false;
+  }
+  state.notify.enabled = true;
+  saveNotifyPrefs();
+  updateNotifyButton();
+  // Unlock audio on this user gesture so later chimes are allowed to play.
+  audioContext()?.resume?.().catch(() => {});
+  playChime("success");
+  notifyUser("Notifications enabled", { body: `Alerts are on for ${state.userName || "you"}`, kind: "success" });
+  showToast("Notifications on — chime for new mail & events", "success");
+  startNotifyPoller();
+  return true;
+}
+
+function disableNotifications() {
+  state.notify.enabled = false;
+  saveNotifyPrefs();
+  updateNotifyButton();
+  stopNotifyPoller();
+  showToast("Notifications paused", "info");
+}
+
+function toggleNotifications() {
+  const on = state.notify.enabled && state.notify.permission === "granted";
+  return on ? (disableNotifications(), Promise.resolve(false)) : enableNotifications();
+}
+
+// --- poller: diff a baseline so we only alert on genuinely new things ----
+function keyOfMail(m) {
+  return String(m?.id ?? m?.threadId ?? `${m?.from ?? ""}|${m?.subject ?? ""}`);
+}
+function keyOfEvent(e) {
+  return String(e?.id ?? `${e?.title ?? ""}|${e?.start ?? ""}`);
+}
+
+async function checkNotifications() {
+  if (!state.notify.enabled || state.notify.permission !== "granted") return;
+  try {
+    const inbox = await api("/api/inbox");
+    const urgent = Array.isArray(inbox.urgent) ? inbox.urgent : [];
+    const ids = new Set(urgent.map(keyOfMail));
+    if (state.notify.seenMail === null) {
+      state.notify.seenMail = ids; // first pass = baseline, no spam
+    } else {
+      const fresh = urgent.filter((m) => !state.notify.seenMail.has(keyOfMail(m)));
+      if (fresh.length) {
+        notifyUser(fresh.length > 1 ? `${fresh.length} new important emails` : "New important email", {
+          body: fresh[0].subject || fresh[0].from || "You have new mail",
+          kind: "info",
+          url: "/#mail",
+        });
+      }
+      state.notify.seenMail = ids;
+    }
+  } catch {
+    /* transient read failure — try again next tick */
+  }
+  try {
+    const day = await api("/api/day");
+    const items = day?.summary?.items || [];
+    const soon = items.filter((it) => {
+      const t = Date.parse(it.start);
+      if (Number.isNaN(t)) return false;
+      const dt = t - Date.now();
+      return dt <= 15 * 60 * 1000 && dt > -60 * 1000;
+    });
+    const ids = new Set(soon.map(keyOfEvent));
+    if (state.notify.seenEvents === null) {
+      state.notify.seenEvents = ids;
+    } else {
+      const fresh = soon.filter((e) => !state.notify.seenEvents.has(keyOfEvent(e)));
+      if (fresh.length) {
+        notifyUser(fresh[0].title ? `Starting soon — ${fresh[0].title}` : "Event starting soon", {
+          body: fmtTime(fresh[0].start) || "Within the next 15 minutes",
+          kind: "warn",
+          url: "/#today",
+        });
+      }
+      state.notify.seenEvents = ids;
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function startNotifyPoller() {
+  stopNotifyPoller();
+  if (!state.notify.enabled) return;
+  checkNotifications();
+  state.notify.timer = setInterval(checkNotifications, 45000);
+}
+
+function stopNotifyPoller() {
+  if (state.notify.timer) {
+    clearInterval(state.notify.timer);
+    state.notify.timer = null;
+  }
+}
+
+async function initServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    await navigator.serviceWorker.register("/sw.js");
+  } catch (err) {
+    console.warn("[sw] registration failed:", err.message);
+  }
 }
 
 // ============================================================
@@ -597,6 +833,9 @@ async function sendChat(text) {
     const reply = res.text || "Done.";
     renderAgentReply(reply, res.degraded);
     setAgentStatus(res.degraded ? "fallback" : "ready");
+    if (document.hidden) {
+      notifyUser("Orbit replied", { body: String(reply).slice(0, 180), kind: res.degraded ? "warn" : "success" });
+    }
     if (/booked|scheduled|confirmed|added/i.test(reply)) {
       loadDay();
       loadItinerary();
@@ -1320,23 +1559,31 @@ async function initAuth() {
       return false;
     }
     if (me.user) {
+      state.user = me.user;
       const name = me.user.name || me.user.email || "Signed in";
+      state.userName = name;
       const initials = name
         .split(/\s+/)
         .map((w) => w[0])
         .join("")
         .slice(0, 2)
         .toUpperCase();
-      const avatarEl = $("#profileAvatar");
-      if (avatarEl) {
-        avatarEl.innerHTML = me.user.picture
-          ? `<img src="${me.user.picture}" alt="">`
-          : initials || "U";
-      }
+      const avatarHtml = me.user.picture ? `<img src="${me.user.picture}" alt="">` : initials || "U";
+      ["#profileAvatar", "#profileModalAvatar"].forEach((sel) => {
+        const node = $(sel);
+        if (node) node.innerHTML = avatarHtml;
+      });
       const nameEl = $("#profileName");
       if (nameEl) nameEl.textContent = name;
+      const greetingEl = $("#greetingName");
+      if (greetingEl) greetingEl.textContent = name;
+      const modalName = $("#profileModalName");
+      if (modalName) modalName.textContent = name;
+      const roleText = me.user.isOwner ? "Owner · Private Office" : "Team · Private Office";
       const roleEl = $("#profileRole");
       if (roleEl) roleEl.textContent = me.user.isOwner ? "Owner" : "Team";
+      const modalRole = $("#profileModalRole");
+      if (modalRole) modalRole.textContent = roleText;
       const signOut = $("#signOutBtn");
       if (signOut) {
         signOut.hidden = false;
@@ -1355,8 +1602,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
   initVoice();
   initInteractions();
+  loadNotifyPrefs();
+  initServiceWorker();
+  updateNotifyButton();
+  $("#notifyBtn")?.addEventListener("click", () => toggleNotifications());
   const ok = await initAuth();
   if (!ok) return;
   loadAll();
   loadRuntimeStatus();
+  if (state.notify.enabled && state.notify.permission === "granted") startNotifyPoller();
 });
