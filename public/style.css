@@ -199,7 +199,7 @@ h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 400; }
   letter-spacing: 0.01em;
   transition: background-color 0.2s, color 0.2s;
 }
-.nav-item span { font-size: 16px; width: 18px; text-align: center; opacity: 0.85; }
+.nav-icon { font-size: 16px; width: 18px; text-align: center; opacity: 0.85; }
 .nav-item:hover { background: var(--surface-hover); color: var(--text); }
 .nav-item.active {
   background: var(--surface-hover);
@@ -1067,7 +1067,7 @@ body { font-size: 15.5px; }
 .brand-name { font-size: 18px; }
 .brand-tag { font-size: 9px; }
 .nav-item { font-size: 14.5px; }
-.nav-item span { font-size: 17px; }
+.nav-icon { font-size: 17px; }
 .system-status { font-size: 12px; }
 .profile strong { font-size: 14px; }
 .profile small { font-size: 11.5px; }
@@ -1162,3 +1162,26 @@ body { font-size: 15.5px; }
   background-clip: padding-box;
 }
 .chat-messages::-webkit-scrollbar-thumb:hover { background: var(--primary); }
+
+/* --- Mobile bottom nav: final cascade override ------------------------- */
+@media (max-width: 780px) {
+  .nav-item {
+    font-size: 10px;
+    padding: 6px 2px;
+    gap: 3px;
+    flex-direction: column;
+  }
+  .nav-icon { width: auto; opacity: 1; }
+  .nav-icon svg { width: 22px; height: 22px; }
+  .nav-label {
+    width: auto;
+    font-size: 10px;
+    line-height: 1.1;
+    opacity: 0.85;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .nav-item b { position: absolute; top: 0; right: 6px; margin-left: 0; }
+}
