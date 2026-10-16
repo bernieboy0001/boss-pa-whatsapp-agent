@@ -28,6 +28,14 @@ function parseDisplayNames(raw) {
   return map;
 }
 
+// Comma-separated address list -> clean, lowercased, de-duped array.
+function parseEmails(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 // One OpenAI-compatible brain, two possible providers. Whichever key is present
 // wins: explicit LLM_* config first, then OpenRouter, then Groq.
 function resolveBrain() {
@@ -106,10 +114,14 @@ export const cfg = {
   // original single-owner app.
   sessionSecret: process.env.SESSION_SECRET ?? "",
   // Comma-separated allowlist. Only these addresses may sign in. Case-insensitive.
-  allowedEmails: (process.env.ALLOWED_EMAILS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean),
+  // `ALLOWED_EMAILS_EXTRA` is appended so new people can be added without ever
+  // needing to read back (or risk clobbering) the sensitive primary list.
+  allowedEmails: [
+    ...new Set([
+      ...parseEmails(process.env.ALLOWED_EMAILS),
+      ...parseEmails(process.env.ALLOWED_EMAILS_EXTRA),
+    ]),
+  ],
   // The account that owns the pre-existing (pre-multi-user) data. Its records
   // keep the original unscoped storage keys, so nothing has to be migrated.
   ownerEmail: (process.env.OWNER_EMAIL ?? "delightbernard7@gmail.com").trim().toLowerCase(),
