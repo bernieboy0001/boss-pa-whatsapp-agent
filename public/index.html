@@ -473,8 +473,40 @@
           </div>
         </div>
         <div class="modal-actions">
+          <a class="text-btn modal-signout" id="modalSignOut" href="/logout" hidden>Sign out</a>
           <button type="button" class="text-btn" onclick="document.getElementById('profileModal').close()">Dismiss</button>
           <button type="button" class="primary-btn" id="profileSettingsBtn">Edit Preferences</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Full-screen Mail Reader -->
+    <dialog class="mail-reader" id="mailReader" aria-label="Email reader">
+      <div class="reader-bar">
+        <button class="icon-btn reader-btn" id="mailReaderClose" type="button" aria-label="Close reader" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+        <span class="reader-title" id="mailReaderBarTitle"></span>
+        <a class="reader-open" id="mailReaderOpen" href="#" target="_blank" rel="noopener" hidden>
+          <span>Open in Gmail</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        </a>
+      </div>
+      <div class="reader-scroll">
+        <h2 class="reader-subject" id="mailReaderSubject"></h2>
+        <div class="reader-meta">
+          <span class="reader-avatar" id="mailReaderAvatar"></span>
+          <div class="reader-who">
+            <strong id="mailReaderFrom"></strong>
+            <small id="mailReaderTo"></small>
+          </div>
+          <span class="reader-date" id="mailReaderDate"></span>
+        </div>
+        <div class="reader-badges" id="mailReaderBadges"></div>
+        <pre class="reader-body" id="mailReaderBody"></pre>
+        <div class="reader-foot">
+          <span class="reader-note" id="mailReaderNote" hidden></span>
+          <button class="text-btn" id="mailReaderClose2" type="button">Close</button>
         </div>
       </div>
     </dialog>

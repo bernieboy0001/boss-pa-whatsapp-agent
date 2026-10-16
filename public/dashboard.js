@@ -425,8 +425,22 @@ function renderMail(box) {
     return;
   }
 
-  for (const m of box.messages) {
+  state.mailMessages = box.messages || [];
+  state.mailSimulated = !!box.simulated;
+
+  box.messages.forEach((m, i) => {
     const li = el("li", `mail-item${m.unread ? " unread" : ""}`);
+    li.tabIndex = 0;
+    li.setAttribute("role", "button");
+    li.setAttribute("aria-label", `Read: ${m.subject || "(no subject)"}`);
+    const open = () => openMailReader(state.mailMessages[i]);
+    li.addEventListener("click", open);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
     const head = el("div", "mail-item-head");
     head.appendChild(el("span", "mail-from", m.fromName || m.from));
     head.appendChild(el("span", "mail-when", relativeTime(m.date) || ""));
@@ -434,20 +448,78 @@ function renderMail(box) {
     li.appendChild(el("div", "mail-subject", m.subject || "(no subject)"));
     if (m.snippet) li.appendChild(el("div", "mail-snippet", m.snippet));
     if (m.hasAttachments) li.appendChild(el("span", "mail-clip", "📎 attachment"));
-    // Bodies are fetched on demand so the panel stays fast on a large mailbox.
-    const pre = el("pre", "mail-body");
-    pre.hidden = true;
-    pre.textContent = m.body || "";
-    li.appendChild(pre);
-    const toggle = el("button", "text-btn mail-expand", "Show full text");
-    toggle.type = "button";
-    toggle.addEventListener("click", () => {
-      pre.hidden = !pre.hidden;
-      toggle.textContent = pre.hidden ? "Show full text" : "Hide full text";
-    });
-    li.appendChild(toggle);
     list.appendChild(li);
+  });
+}
+
+function mailInitials(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return parts.map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+}
+
+function fmtMailDate(t) {
+  if (!t) return "";
+  try {
+    return new Date(t).toLocaleString([], {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch {
+    return String(t);
   }
+}
+
+function openMailReader(m) {
+  const dlg = $("#mailReader");
+  if (!dlg || !m) return;
+  const subject = m.subject || "(no subject)";
+  $("#mailReaderBarTitle").textContent = subject;
+  $("#mailReaderSubject").textContent = subject;
+  $("#mailReaderFrom").textContent = m.fromName || m.from || "Unknown sender";
+  $("#mailReaderTo").textContent = m.to ? `to ${m.to}` : "";
+  $("#mailReaderDate").textContent = fmtMailDate(m.date);
+  $("#mailReaderAvatar").textContent = mailInitials(m.fromName || m.from);
+  $("#mailReaderBody").textContent = m.body || m.snippet || "(no message body)";
+
+  const badges = $("#mailReaderBadges");
+  badges.innerHTML = "";
+  const addBadge = (text, cls) => badges.appendChild(el("span", `reader-badge${cls ? " " + cls : ""}`, text));
+  if (m.unread) addBadge("Unread", "unread");
+  if (m.important) addBadge("Important");
+  if (m.starred) addBadge("Starred");
+  if (m.hasAttachments) addBadge("📎 Attachment");
+  const systemLabels = new Set(["UNREAD", "IMPORTANT", "STARRED", "INBOX", "SENT", "DRAFT", "TRASH", "SPAM"]);
+  (m.labels || [])
+    .filter((l) => !systemLabels.has(l) && !String(l).startsWith("CATEGORY_"))
+    .forEach((label) =>
+      addBadge(String(label).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()))
+    );
+
+  const openLink = $("#mailReaderOpen");
+  const id = m.threadId || m.id;
+  if (openLink) {
+    if (id && !state.mailSimulated) {
+      openLink.href = `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(id)}`;
+      openLink.hidden = false;
+    } else {
+      openLink.hidden = true;
+      openLink.removeAttribute("href");
+    }
+  }
+
+  const note = $("#mailReaderNote");
+  if (note) {
+    note.hidden = !m.bodyTruncated;
+    note.textContent = m.bodyTruncated ? "Long message — open in Gmail to see it in full." : "";
+  }
+
+  if (typeof dlg.showModal === "function") {
+    if (!dlg.open) dlg.showModal();
+  } else {
+    dlg.setAttribute("open", "");
+  }
+  $("#mailReader .reader-scroll")?.scrollTo(0, 0);
 }
 
 async function loadMail(query) {
@@ -1444,6 +1516,17 @@ function initInteractions() {
     });
   }
 
+  // Full-screen Mail Reader
+  const mailReader = $("#mailReader");
+  if (mailReader) {
+    const close = () => mailReader.open && mailReader.close();
+    $("#mailReaderClose")?.addEventListener("click", close);
+    $("#mailReaderClose2")?.addEventListener("click", close);
+    mailReader.addEventListener("click", (e) => {
+      if (e.target === mailReader) close(); // backdrop tap
+    });
+  }
+
   // Profile Button
   const profileBtn = $("#profileBtn");
   const profileModal = $("#profileModal");
@@ -1694,6 +1777,8 @@ async function initAuth() {
         const emailEl = $("#signOutEmail");
         if (emailEl) emailEl.textContent = me.user.email || "";
       }
+      const modalSignOut = $("#modalSignOut");
+      if (modalSignOut) modalSignOut.hidden = false;
     }
     return true;
   } catch (err) {
